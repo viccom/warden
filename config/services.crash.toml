@@ -1,0 +1,36 @@
+# warden 崩溃自动重启 + 熔断演示配置
+#
+# 用法(在项目根目录):
+#   cargo run -- run --config config/services.crash.toml
+#   然后 curl 观察状态:Running → 崩溃 → 退避重启 → 3 次后 Failed 熔断
+# 端口 8792 避开其他配置。
+
+[daemon]
+api_bind   = "127.0.0.1:8792"
+auth_token = ""
+data_dir   = "./data"
+log_dir    = "./logs"
+
+# ── 崩溃自动重启(立即退出 exit 1,auto_restart=true)─────────────
+# 预期:启动 → 立即退出 → 500ms/1000ms/2000ms 退避重启 → 超 max_retries(3)进 Failed
+[[service]]
+name = "crash-restart"
+display_name = "崩溃自动重启(演示)"
+command = "cmd"
+args = ["/c", "exit", "1"]
+working_dir = "."
+auto_start = true
+auto_restart = true
+restart = { max_retries = 3, backoff_initial_ms = 500, backoff_max_ms = 2000, backoff_factor = 2.0, restart_window_secs = 30 }
+graceful_timeout_secs = 1
+
+# ── 对照组:退出但 auto_restart=false → 直接 Failed(不重启)──────
+[[service]]
+name = "crash-norestart"
+display_name = "退出不重启(对照)"
+command = "cmd"
+args = ["/c", "exit", "1"]
+working_dir = "."
+auto_start = true
+auto_restart = false
+graceful_timeout_secs = 1

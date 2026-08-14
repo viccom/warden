@@ -3,3 +3,4 @@
 /data
 *.log
 *.rs.bk
+/.zcode

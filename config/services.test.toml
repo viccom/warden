@@ -1,0 +1,38 @@
+# warden GBK 解码手动测试配置
+#
+# 用法(在项目根目录):
+#   cargo build
+#   cargo run -- run --config config/services.test.toml
+#   然后用 curl 对比两个服务的 logs(见会话中的操作步骤)。
+#
+# 两个服务跑同一个 gbk_target(输出 GBK 中文),唯一差异是是否设 output_encoding,
+# 用来对比"不解码(乱码)"与"解码(正常)"。端口用 8791 避免与日常 8789 冲突。
+
+[daemon]
+api_bind   = "127.0.0.1:8791" # 测试专用端口
+auth_token = ""               # 测试免鉴权
+data_dir   = "./data"
+log_dir    = "./logs"
+
+# ── 对照组:不设 output_encoding(默认 UTF-8)──────────────────────
+# gbk_target 输出 GBK 字节,warden 按 UTF-8 解码 → 中文行乱码/替换符(U+FFFD)
+[[service]]
+name = "gbk-raw"
+display_name = "GBK 对照(不解码)"
+command = "target/debug/gbk_target.exe"
+working_dir = "."
+auto_start = true
+auto_restart = false
+graceful_timeout_secs = 2
+
+# ── 实验组:设 output_encoding = "gbk" ────────────────────────────
+# warden 按 GBK 解码 → 中文行正确
+[[service]]
+name = "gbk-decoded"
+display_name = "GBK 解码(修复)"
+command = "target/debug/gbk_target.exe"
+working_dir = "."
+auto_start = true
+auto_restart = false
+output_encoding = "gbk"
+graceful_timeout_secs = 2
