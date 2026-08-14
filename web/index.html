@@ -93,13 +93,16 @@
                              padding: 5px 10px; border-radius: 6px; font-family: inherit; font-size: 13px;
                              width: 150px; outline: none; }
   .logbar input[type=text]:focus { border-color: var(--blue-dim); }
-  .logbar .lblchk { color: var(--sub); font-size: 13px; display: flex; align-items: center; gap: 4px; }
-  .logbar .lblchk input { accent-color: var(--blue); }
+  .logbar select { background: var(--bg); border: 1px solid var(--border); color: var(--text);
+                    padding: 5px 8px; border-radius: 6px; font-family: inherit; font-size: 13px; outline: none; }
+  .line.err .text { color: var(--red); }
+  .line.lv-error .text { color: var(--red); }
+  .line.lv-warn .text { color: var(--yellow); }
+  .line.lv-debug .text { color: var(--muted); }
   #logs { flex: 1; overflow-y: auto; padding: 12px 18px; font-size: 13.5px; line-height: 1.7;
           font-family: ui-monospace, "Cascadia Code", Consolas, "Courier New", monospace; }
   .line { display: flex; gap: 10px; white-space: pre-wrap; word-break: break-all; }
   .line .ts { color: var(--muted); flex-shrink: 0; }
-  .line.err .text { color: var(--red); }
 
   /* ── 模态表单 ── */
   .overlay { position: fixed; inset: 0; background: rgba(8,8,14,.7); backdrop-filter: blur(3px);
@@ -159,7 +162,14 @@
       <span class="hint" id="loghint"></span>
       <span class="grow"></span>
       <input id="logFilter" type="text" placeholder="过滤日志…" oninput="onLogFilter()">
-      <label class="lblchk"><input type="checkbox" id="errOnly" onchange="onLogFilter()"> 仅错误</label>
+      <select id="logLevel" onchange="onLogFilter()">
+        <option value="">全部等级</option>
+        <option value="error">error</option>
+        <option value="warn">warn</option>
+        <option value="info">info</option>
+        <option value="debug">debug</option>
+        <option value="unknown">未知</option>
+      </select>
       <button class="btn sm" id="pauseBtn" onclick="togglePause()">⏸ 暂停</button>
       <button class="btn sm" onclick="clearLog()">清空</button>
     </div>
@@ -309,8 +319,8 @@ function selectService(name) {
   document.getElementById('logtitle').textContent = name;
   // 切换服务:重置日志过滤
   document.getElementById('logFilter').value = '';
-  document.getElementById('errOnly').checked = false;
-  logFilter = ''; logErrOnly = false;
+  document.getElementById('logLevel').value = '';
+  logFilter = ''; logLevel = '';
   clearLog(true);
   // 先拉历史快照
   api('/api/v1/services/' + enc(name) + '/logs?tail=200').then(d => {
@@ -363,18 +373,23 @@ function closeStream() {
 // Canvas——本地监护每秒几十行场景增量 DOM 足够;若未来达每秒千行再升级虚拟滚动。
 let logBuf = [];       // 全量缓冲(上限 LOG_BUF_MAX)
 let logFilter = '';    // 关键词(大小写不敏感)
-let logErrOnly = false;
+let logLevel = '';    // 等级过滤(''=全部)
 const LOG_BUF_MAX = 2000;
 const LOG_DOM_MAX = 1500;
 
 function matchLog(line) {
-  if (logErrOnly && line.stream !== 'stderr') return false;
+  if (logLevel && (line.level || 'unknown') !== logLevel) return false;
   if (logFilter && !line.text.toLowerCase().includes(logFilter)) return false;
   return true;
 }
 function appendLogDom(box, line) {
   const div = document.createElement('div');
-  div.className = 'line ' + (line.stream === 'stderr' ? 'err' : 'out');
+  // 等级着色:error 红 / warn 黄 / debug 灰;stderr 且未知等级时保持红(原行为)
+  const lv = line.level || 'unknown';
+  const cls = lv === 'error' || lv === 'warn' || lv === 'debug'
+    ? 'lv-' + lv
+    : (line.stream === 'stderr' ? 'err' : 'out');
+  div.className = 'line ' + cls;
   const ts = document.createElement('span');
   ts.className = 'ts';
   ts.textContent = line.ts ? new Date(line.ts).toLocaleTimeString() : '';
@@ -387,8 +402,8 @@ function appendLogDom(box, line) {
 function updateLogHint(shown) {
   const h = document.getElementById('loghint');
   const total = logBuf.length;
-  if (logFilter || logErrOnly) {
-    h.textContent = '显示 ' + shown + '/' + total + ' 行' + (logFilter ? ' · 匹配 "' + logFilter + '"' : '') + (logErrOnly ? ' · 仅错误' : '');
+  if (logFilter || logLevel) {
+    h.textContent = '显示 ' + shown + '/' + total + ' 行' + (logLevel ? ' · 等级 ' + logLevel : '') + (logFilter ? ' · 匹配 "' + logFilter + '"' : '');
   } else {
     h.textContent = '';
   }
@@ -398,7 +413,7 @@ function appendLog(line) {
   if (logBuf.length > LOG_BUF_MAX) {
     logBuf.shift();
     // 仅无过滤时 DOM 与缓冲一一对应,同步删首行(过滤模式由 rebuildLogs 全量重建)
-    if (!logFilter && !logErrOnly) {
+    if (!logFilter && !logLevel) {
       const box = document.getElementById('logs');
       if (box.firstChild && !box.firstChild.classList.contains('empty')) box.removeChild(box.firstChild);
     }
@@ -425,7 +440,7 @@ function rebuildLogs() {
 }
 function onLogFilter() {
   logFilter = document.getElementById('logFilter').value.trim().toLowerCase();
-  logErrOnly = document.getElementById('errOnly').checked;
+  logLevel = document.getElementById('logLevel').value;
   rebuildLogs();
 }
 function scrollBottom() {

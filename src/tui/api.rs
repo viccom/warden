@@ -96,11 +96,14 @@ pub struct MetricsView {
     pub memory_kb: u64,
 }
 
-/// 单行日志(stream: stdout/stderr;ts: ISO 时间;text)。
+/// 单行日志(stream: stdout/stderr;level: 启发式等级;ts: ISO 时间;text)。
 #[derive(Clone, Deserialize, Debug)]
 pub struct LogLineView {
     #[serde(default)]
     pub stream: String,
+    /// 启发式识别的等级:debug/info/warn/error/unknown。
+    #[serde(default)]
+    pub level: String,
     #[serde(default)]
     pub ts: String,
     #[serde(default)]

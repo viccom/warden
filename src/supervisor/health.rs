@@ -111,7 +111,11 @@ async fn check_one(entry: &super::ProcHandle, hc: &HealthCheck, webhook: Option<
             }
         );
         tracing::warn!("[health] {msg}");
-        entry.log.push(crate::logs::LogStream::Stderr, msg.clone());
+        entry.log.push(
+            crate::logs::LogStream::Stderr,
+            crate::logs::LEVEL_WARN,
+            msg.clone(),
+        );
         if let Some(url) = webhook {
             let body = serde_json::json!({
                 "service": name,

@@ -27,9 +27,11 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
                     exit_code: None,
                     at: Utc::now(),
                 };
-                handle
-                    .log
-                    .push(LogStream::Stderr, format!("[warden] spawn 失败:{e}"));
+                handle.log.push(
+                    LogStream::Stderr,
+                    crate::logs::LEVEL_ERROR,
+                    format!("[warden] spawn 失败:{e}"),
+                );
                 return;
             }
         };
@@ -83,9 +85,11 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
                 started_at: now,
             };
         }
-        handle
-            .log
-            .push(LogStream::Stdout, format!("[warden] 进程启动 pid={pid:?}"));
+        handle.log.push(
+            LogStream::Stdout,
+            crate::logs::LEVEL_INFO,
+            format!("[warden] 进程启动 pid={pid:?}"),
+        );
 
         // 等待退出或主动停止
         let exit_code = tokio::select! {
@@ -99,17 +103,17 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
                     let mut g = handle.inner.lock().unwrap();
                     g.state = ProcState::Stopping;
                 }
-                handle.log.push(LogStream::Stdout, "[warden] 发送优雅停止信号");
+                handle.log.push(LogStream::Stdout, crate::logs::LEVEL_INFO, "[warden] 发送优雅停止信号");
                 if let Err(e) = super::signal::send_graceful(pgid) {
                     tracing::warn!("[supervisor] 发送 graceful 信号失败({}):{e}", handle.config.name);
                 }
                 let timeout = std::time::Duration::from_secs(handle.config.graceful_timeout_secs);
                 match tokio::time::timeout(timeout, child.wait()).await {
                     Ok(_) => {
-                        handle.log.push(LogStream::Stdout, "[warden] 优雅停止完成");
+                        handle.log.push(LogStream::Stdout, crate::logs::LEVEL_INFO, "[warden] 优雅停止完成");
                     }
                     Err(_) => {
-                        handle.log.push(LogStream::Stderr, "[warden] 优雅停止超时,强杀进程树");
+                        handle.log.push(LogStream::Stderr, crate::logs::LEVEL_WARN, "[warden] 优雅停止超时,强杀进程树");
                         {
                             let g = handle.inner.lock().unwrap();
                             if let Some(j) = &g.job {
@@ -122,7 +126,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
                 }
                 let mut g = handle.inner.lock().unwrap();
                 g.state = ProcState::Stopped;
-                handle.log.push(LogStream::Stdout, "[warden] 已停止");
+                handle.log.push(LogStream::Stdout, crate::logs::LEVEL_INFO, "[warden] 已停止");
                 return;
             }
         };
@@ -136,6 +140,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
 
         handle.log.push(
             LogStream::Stderr,
+            crate::logs::LEVEL_INFO,
             format!("[warden] 进程退出 code={exit_code:?}"),
         );
 
@@ -168,9 +173,11 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
                     exit_code,
                     at: Utc::now(),
                 };
-                handle
-                    .log
-                    .push(LogStream::Stderr, "[warden] 重启次数超限,进入 Failed");
+                handle.log.push(
+                    LogStream::Stderr,
+                    crate::logs::LEVEL_ERROR,
+                    "[warden] 重启次数超限,进入 Failed",
+                );
                 return;
             }
             g.restart_count += 1;
@@ -182,6 +189,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
         };
         handle.log.push(
             LogStream::Stdout,
+            crate::logs::LEVEL_INFO,
             format!("[warden] {delay}ms 后第 {attempt} 次重启"),
         );
 
@@ -239,12 +247,39 @@ async fn pipe_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                 }
                 let (text, _, _) = encoding.decode(&buf[..end]);
                 if !text.is_empty() {
-                    log.push(kind, text.into_owned());
+                    log.push(kind, detect_level(&text), text.into_owned());
                 }
             }
             Err(_) => break,
         }
     }
+}
+
+/// 启发式识别日志等级(被监护进程是黑盒,只能按常见格式模式匹配)。
+/// 优先级 error > warn > info > debug;未匹配返回 "unknown"。
+/// 识别规则(大小写不敏感):`[level]`、`level:`、行首 `level `、独立词 ` level `
+/// (覆盖 Rust tracing 的 `... INFO target: msg` 与 log4j/`[ERROR]` 风格)。
+/// 启发式有误报可能(如正文出现 "error:"),文档明示,UI 提供人工筛选。
+fn detect_level(text: &str) -> &'static str {
+    let lower = text.to_ascii_lowercase();
+    for (tok, lv) in [
+        ("error", crate::logs::LEVEL_ERROR),
+        ("warn", crate::logs::LEVEL_WARN),
+        ("info", crate::logs::LEVEL_INFO),
+        ("debug", "debug"),
+    ] {
+        let open = format!("[{tok}]");
+        let colon = format!("{tok}:");
+        let sp = format!(" {tok} ");
+        if lower.contains(&open)
+            || lower.contains(&colon)
+            || lower.starts_with(&format!("{tok} "))
+            || lower.contains(&sp)
+        {
+            return lv;
+        }
+    }
+    "unknown"
 }
 
 /// 解析配置的编码标签为 encoding_rs 编码;None/空/未识别均回退 UTF-8。
@@ -304,5 +339,26 @@ mod tests {
         assert_eq!(snap.len(), 2);
         assert_eq!(snap[0].text, "第一行");
         assert_eq!(snap[1].text, "second line");
+    }
+
+    /// 验证意图:等级识别覆盖常见日志格式(括号/冒号/行首/独立词/tracing 风格)。
+    #[test]
+    fn detect_level_recognizes_common_formats() {
+        assert_eq!(detect_level("[ERROR] connect failed"), "error");
+        assert_eq!(detect_level("error: timeout"), "error");
+        assert_eq!(detect_level("ERROR connect failed"), "error");
+        assert_eq!(
+            detect_level("2026-08-14T10:00:00Z ERROR rs_iot::db: lux SAVE failed"),
+            "error"
+        );
+        assert_eq!(detect_level("WARN: retry"), "warn");
+        assert_eq!(detect_level("2026-08-14T10:00:00Z  WARN target: x"), "warn");
+        assert_eq!(detect_level("INFO started"), "info");
+        assert_eq!(detect_level("[info] listening"), "info");
+        assert_eq!(detect_level("DEBUG detail"), "debug");
+        assert_eq!(detect_level("hello world"), "unknown");
+        // 大写不敏感 + 优先级 error > warn
+        assert_eq!(detect_level("[WARN] [ERROR] both"), "error");
+        assert_eq!(detect_level("plain text no marker"), "unknown");
     }
 }

@@ -238,10 +238,12 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     for l in app.logs().skip(app.logs().count().saturating_sub(n)) {
         let ts = l.ts.get(11..19).unwrap_or(&l.ts); // ISO → HH:MM:SS
-        let color = if l.stream == "stderr" {
-            Color::Red
-        } else {
-            Color::Reset
+                                                    // 等级着色:error 红 / warn 黄;stderr 且未知等级时也红(原行为)
+        let color = match l.level.as_str() {
+            "error" => Color::Red,
+            "warn" => Color::Yellow,
+            _ if l.stream == "stderr" => Color::Red,
+            _ => Color::Reset,
         };
         lines.push(Line::from(vec![
             Span::styled(format!("{ts} "), Style::new().fg(Color::DarkGray)),

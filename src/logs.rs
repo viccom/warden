@@ -26,9 +26,17 @@ pub enum LogStream {
 #[derive(Serialize, Clone, Debug)]
 pub struct LogLine {
     pub stream: LogStream,
+    /// 启发式识别的日志等级:debug/info/warn/error/unknown
+    /// (被监护进程是黑盒,等级靠格式模式识别,见 supervisor::proc::detect_level)。
+    pub level: String,
     pub ts: chrono::DateTime<chrono::Utc>,
     pub text: String,
 }
+
+/// 常用等级名(warden 自身消息与告警用)。
+pub const LEVEL_INFO: &str = "info";
+pub const LEVEL_WARN: &str = "warn";
+pub const LEVEL_ERROR: &str = "error";
 
 const HISTORY_CAPACITY: usize = 2000;
 const BROADCAST_CAPACITY: usize = 256;
@@ -50,10 +58,11 @@ impl LogHub {
         }
     }
 
-    /// 推入一行:写历史 + 广播 + 落盘(若配置)。
-    pub fn push(&self, stream: LogStream, text: impl Into<String>) {
+    /// 推入一行:写历史 + 广播 + 落盘(若配置)。level 见 `LogLine::level`。
+    pub fn push(&self, stream: LogStream, level: &str, text: impl Into<String>) {
         let line = LogLine {
             stream,
+            level: level.to_string(),
             ts: chrono::Utc::now(),
             text: text.into(),
         };
@@ -139,7 +148,7 @@ mod tests {
     fn push_and_snapshot_returns_last_n_in_order() {
         let h = hub();
         for i in 0..5 {
-            h.push(LogStream::Stdout, format!("line{i}"));
+            h.push(LogStream::Stdout, "info", format!("line{i}"));
         }
         let snap = h.snapshot(3);
         assert_eq!(snap.len(), 3);
@@ -151,7 +160,7 @@ mod tests {
     fn history_caps_at_capacity_dropping_oldest() {
         let h = hub();
         for i in 0..(HISTORY_CAPACITY + 100) {
-            h.push(LogStream::Stdout, format!("x{i}"));
+            h.push(LogStream::Stdout, "info", format!("x{i}"));
         }
         let snap = h.snapshot(usize::MAX);
         assert_eq!(snap.len(), HISTORY_CAPACITY);
@@ -162,7 +171,7 @@ mod tests {
     #[test]
     fn snapshot_more_than_available_returns_all() {
         let h = hub();
-        h.push(LogStream::Stderr, "only");
+        h.push(LogStream::Stderr, "error", "only");
         let snap = h.snapshot(500);
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].stream, LogStream::Stderr);
@@ -172,7 +181,7 @@ mod tests {
     fn broadcast_delivers_to_subscriber() {
         let h = hub();
         let mut rx = h.subscribe();
-        h.push(LogStream::Stdout, "hello");
+        h.push(LogStream::Stdout, "info", "hello");
         let line = rx.try_recv().expect("订阅者应收到广播");
         assert_eq!(line.text, "hello");
     }
@@ -180,7 +189,7 @@ mod tests {
     #[test]
     fn push_without_subscriber_does_not_panic() {
         let h = hub();
-        h.push(LogStream::Stdout, "nobody listening");
+        h.push(LogStream::Stdout, "info", "nobody listening");
         // 仅断言未 panic
     }
 
@@ -191,6 +200,7 @@ mod tests {
         let mut rf = RollingFile::new(tmp.clone(), "svc".into());
         rf.append_line(&LogLine {
             stream: LogStream::Stdout,
+            level: "info".into(),
             ts: chrono::Utc::now(),
             text: "hello".into(),
         })
