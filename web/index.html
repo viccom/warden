@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>warden</title>
+<style>
+  :root {
+    --bg: #1e1e2e; --surface: #313244; --surface2: #45475a;
+    --text: #cdd6f4; --sub: #a6adc8; --muted: #6c7086;
+    --green: #a6e3a1; --red: #f38ba8; --yellow: #f9e2af; --blue: #89b4fa;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+         background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 16px; padding: 10px 16px;
+           background: var(--surface); border-bottom: 1px solid var(--surface2); }
+  .brand { font-weight: 700; font-size: 16px; }
+  .brand small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  .health { color: var(--sub); font-size: 13px; display: flex; align-items: center; gap: 6px; }
+  .token { margin-left: auto; display: flex; gap: 6px; }
+  .token input { background: var(--bg); border: 1px solid var(--surface2); color: var(--text);
+                 padding: 4px 8px; border-radius: 4px; font-family: inherit; width: 160px; }
+  .token button { background: var(--surface2); color: var(--text); border: none;
+                  padding: 4px 10px; border-radius: 4px; cursor: pointer; }
+  main { flex: 1; display: flex; overflow: hidden; }
+  aside { width: 260px; border-right: 1px solid var(--surface2); overflow-y: auto; background: var(--bg); }
+  .svc { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer;
+         border-bottom: 1px solid #2a2a3c; }
+  .svc:hover { background: var(--surface); }
+  .svc.sel { background: var(--surface2); }
+  .svcname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pid { color: var(--muted); font-size: 11px; }
+  .btns button { background: var(--surface2); color: var(--text); border: none;
+                 padding: 2px 8px; border-radius: 3px; cursor: pointer; font-size: 11px; }
+  .btns button:hover { background: var(--blue); color: var(--bg); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; background: var(--muted); }
+  .dot.running { background: var(--green); } .dot.stopped { background: var(--muted); }
+  .dot.failed { background: var(--red); } .dot.restarting { background: var(--yellow); }
+  .dot.starting, .dot.stopping { background: var(--blue); }
+  .logpanel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .logbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+            background: var(--surface); border-bottom: 1px solid var(--surface2); }
+  .logbar #logtitle { font-weight: 600; }
+  .grow { flex: 1; }
+  .logbar button { background: var(--surface2); color: var(--text); border: none;
+                   padding: 4px 10px; border-radius: 4px; cursor: pointer; font-family: inherit; }
+  #logs { flex: 1; overflow-y: auto; padding: 8px 12px; font-size: 12.5px; line-height: 1.5; }
+  .line { display: flex; gap: 8px; white-space: pre-wrap; word-break: break-all; }
+  .line .ts { color: var(--muted); flex-shrink: 0; }
+  .line.err .text { color: var(--red); }
+  .empty { color: var(--muted); padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">warden <small id="ver"></small></div>
+  <div class="health"><span id="hdot" class="dot"></span><span id="htext">连接中…</span> · <span id="count"></span></div>
+  <div class="token">
+    <input id="tok" type="password" placeholder="token(可选)">
+    <button onclick="saveToken()">保存</button>
+  </div>
+</header>
+<main>
+  <aside id="services"><div class="empty">加载中…</div></aside>
+  <section class="logpanel">
+    <div class="logbar">
+      <span id="logtitle">选择左侧服务查看日志</span>
+      <span class="grow"></span>
+      <button id="pauseBtn" onclick="togglePause()">⏸ 暂停</button>
+      <button onclick="clearLog()">清空</button>
+    </div>
+    <div id="logs"><div class="empty">未选择服务</div></div>
+  </section>
+</main>
+<script>
+// ── 状态 ─────────────────────────────────────────────
+let token = localStorage.getItem('warden_token') || '';
+let selected = null;
+let currentList = [];
+let es = null;            // EventSource(SSE,无 token 时)
+let pollTimer = null;     // 降级轮询(有 token 时)
+let lastTs = '';          // 轮询去重水位
+let paused = false;
+let svcTimer = null;
+
+// ── API 辅助 ─────────────────────────────────────────
+function authHeaders() {
+  const h = {};
+  if (token) h['Authorization'] = 'Bearer ' + token;
+  return h;
+}
+async function api(path, method = 'GET') {
+  const r = await fetch(path, { method, headers: authHeaders() });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+const enc = encodeURIComponent;
+
+// ── 顶栏:health ─────────────────────────────────────
+async function loadHealth() {
+  try {
+    const h = await api('/api/v1/health');
+    document.getElementById('hdot').className = 'dot ' + (h.status === 'ok' ? 'running' : 'failed');
+    document.getElementById('htext').textContent = h.status;
+    document.getElementById('count').textContent = h.running + ' running / ' + h.services + ' / ' + h.failed + ' failed';
+    document.getElementById('ver').textContent = 'v' + h.version;
+  } catch (e) {
+    document.getElementById('hdot').className = 'dot failed';
+    document.getElementById('htext').textContent = '连接失败(token?)';
+  }
+}
+
+// ── 左栏:服务列表 ───────────────────────────────────
+async function loadServices() {
+  try {
+    const data = await api('/api/v1/services');
+    currentList = data.services || [];
+    renderServices(currentList);
+  } catch (e) { /* health 会提示 */ }
+}
+function renderServices(list) {
+  const box = document.getElementById('services');
+  box.innerHTML = '';
+  if (!list.length) { box.innerHTML = '<div class="empty">无服务</div>'; return; }
+  for (const s of list) {
+    const st = (s.state && s.state.state) || 'unknown';
+    const row = document.createElement('div');
+    row.className = 'svc' + (s.name === selected ? ' sel' : '');
+    row.onclick = () => selectService(s.name);
+    const dot = document.createElement('span');
+    dot.className = 'dot ' + st;
+    const name = document.createElement('span');
+    name.className = 'svcname';
+    name.textContent = s.display_name || s.name;
+    name.title = s.name;
+    const pid = document.createElement('span');
+    pid.className = 'pid';
+    pid.textContent = s.state && s.state.pid ? '#' + s.state.pid : '';
+    const btns = document.createElement('span');
+    btns.className = 'btns';
+    const isRun = st === 'running';
+    const b = document.createElement('button');
+    b.textContent = isRun ? 'stop' : 'start';
+    b.onclick = (ev) => { ev.stopPropagation(); startStop(s.name, isRun ? 'stop' : 'start'); };
+    btns.appendChild(b);
+    row.append(dot, name, pid, btns);
+    box.appendChild(row);
+  }
+}
+
+// ── 右栏:选中服务 + 日志流 ──────────────────────────
+function selectService(name) {
+  if (selected === name) return;
+  selected = name;
+  lastTs = '';
+  closeStream();
+  document.getElementById('logtitle').textContent = name;
+  clearLog(true);
+  // 先拉历史快照
+  api('/api/v1/services/' + enc(name) + '/logs?tail=200').then(d => {
+    for (const l of d.lines) appendLog(l);
+    if (d.lines.length) lastTs = d.lines[d.lines.length - 1].ts;
+    capLogs(); scrollBottom();
+  }).catch(() => {});
+  openStream(name);
+  renderServices(currentList);
+}
+function openStream(name) {
+  closeStream();
+  if (token) {
+    // EventSource 不能设 header → 有 token 时降级轮询
+    pollTimer = setInterval(pollLogs, 1500);
+    pollLogs();
+  } else {
+    es = new EventSource('/api/v1/services/' + enc(name) + '/logs/stream');
+    es.addEventListener('log', ev => {
+      try {
+        const line = JSON.parse(ev.data);
+        appendLog(line); capLogs();
+        if (!paused) scrollBottom();
+      } catch (_) {}
+    });
+    // 断线浏览器自动重连,无需处理 onerror
+  }
+}
+async function pollLogs() {
+  if (!selected) return;
+  try {
+    const d = await api('/api/v1/services/' + enc(selected) + '/logs?tail=80');
+    let added = false;
+    for (const l of d.lines) {
+      if (!lastTs || l.ts > lastTs) { appendLog(l); added = true; }
+    }
+    if (d.lines.length) lastTs = d.lines[d.lines.length - 1].ts;
+    if (added) { capLogs(); if (!paused) scrollBottom(); }
+  } catch (_) {}
+}
+function closeStream() {
+  if (es) { es.close(); es = null; }
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+// ── 日志渲染(textContent 防 XSS)─────────────────────
+function appendLog(line) {
+  const box = document.getElementById('logs');
+  // 首次写入清掉"未选择服务"占位
+  if (box.firstChild && box.firstChild.classList && box.firstChild.classList.contains('empty')) {
+    box.innerHTML = '';
+  }
+  const div = document.createElement('div');
+  div.className = 'line ' + (line.stream === 'stderr' ? 'err' : 'out');
+  const ts = document.createElement('span');
+  ts.className = 'ts';
+  ts.textContent = line.ts ? new Date(line.ts).toLocaleTimeString() : '';
+  const txt = document.createElement('span');
+  txt.className = 'text';
+  txt.textContent = line.text;
+  div.append(ts, txt);
+  box.appendChild(div);
+}
+function capLogs() {
+  const box = document.getElementById('logs');
+  while (box.childNodes.length > 1000) box.removeChild(box.firstChild);
+}
+function scrollBottom() {
+  const box = document.getElementById('logs');
+  box.scrollTop = box.scrollHeight;
+}
+function clearLog(keepPlaceholder) {
+  const box = document.getElementById('logs');
+  box.innerHTML = keepPlaceholder ? '<div class="empty">加载日志中…</div>' : '';
+}
+
+// ── 操作:start / stop ───────────────────────────────
+async function startStop(name, action) {
+  try {
+    await fetch('/api/v1/services/' + enc(name) + '/' + action, { method: 'POST', headers: authHeaders() });
+    loadServices();
+  } catch (e) { alert(action + ' 失败:' + e.message); }
+}
+
+// ── 顶栏控制 ─────────────────────────────────────────
+function saveToken() {
+  token = document.getElementById('tok').value.trim();
+  localStorage.setItem('warden_token', token);
+  // token 变化需重建流(切换 SSE/轮询)
+  if (selected) selectService(selected);
+  loadHealth(); loadServices();
+}
+function togglePause() {
+  paused = !paused;
+  document.getElementById('pauseBtn').textContent = paused ? '▶ 继续' : '⏸ 暂停';
+  if (!paused) scrollBottom();
+}
+
+// ── 启动 ─────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('tok').value = token;
+  loadHealth(); loadServices();
+  svcTimer = setInterval(() => { loadHealth(); loadServices(); }, 2000);
+});
+window.addEventListener('beforeunload', closeStream);
+</script>
+</body>
+</html>

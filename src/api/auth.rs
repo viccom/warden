@@ -20,8 +20,9 @@ pub async fn auth_middleware(
     if st.auth_token.is_none() {
         return next.run(req).await;
     }
-    // 健康端点白名单
-    if req.uri().path() == "/api/v1/health" {
+    // 白名单:UI 页面 + 健康端点(浏览器直接打开 / 与探活,无需 token)
+    let path = req.uri().path();
+    if path == "/" || path == "/api/v1/health" {
         return next.run(req).await;
     }
     let expected = st.auth_token.as_deref().unwrap_or("");

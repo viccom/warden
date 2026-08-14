@@ -15,6 +15,7 @@ pub mod auth;
 pub mod routes_health;
 pub mod routes_logs;
 pub mod routes_service;
+pub mod routes_ui;
 
 /// 贯穿所有 handler 的共享状态。
 #[derive(Clone)]
@@ -49,20 +50,30 @@ pub fn build_state(cfg: Config, config_path: Option<PathBuf>) -> AppState {
 pub fn build_router(state: AppState) -> Router {
     use axum::routing::{get, post};
     Router::new()
+        .route("/", get(routes_ui::index))
         .route("/api/v1/health", get(routes_health::health))
         .route("/api/v1/services", get(routes_service::list))
-        .route("/api/v1/services/start-all", post(routes_service::start_all))
+        .route(
+            "/api/v1/services/start-all",
+            post(routes_service::start_all),
+        )
         .route("/api/v1/services/stop-all", post(routes_service::stop_all))
         .route("/api/v1/services/{name}", get(routes_service::get_one))
         .route("/api/v1/services/{name}/start", post(routes_service::start))
         .route("/api/v1/services/{name}/stop", post(routes_service::stop))
-        .route("/api/v1/services/{name}/restart", post(routes_service::restart))
+        .route(
+            "/api/v1/services/{name}/restart",
+            post(routes_service::restart),
+        )
         .route("/api/v1/services/{name}/logs", get(routes_logs::logs))
         .route(
             "/api/v1/services/{name}/logs/stream",
             get(routes_logs::logs_stream),
         )
-        .route("/api/v1/services/{name}/metrics", get(routes_service::metrics))
+        .route(
+            "/api/v1/services/{name}/metrics",
+            get(routes_service::metrics),
+        )
         .route("/api/v1/config/reload", post(routes_service::reload))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
