@@ -60,7 +60,9 @@ pub async fn metrics(
     Path(name): Path<String>,
 ) -> WResult<impl IntoResponse> {
     let s = st.supervisor.status(&name)?;
-    Ok(Json(json!({ "name": name, "state": s.state, "metrics": s.metrics })))
+    Ok(Json(
+        json!({ "name": name, "state": s.state, "metrics": s.metrics }),
+    ))
 }
 
 /// 重新加载配置文件,增量同步(add 新服务 / remove 已停止的旧服务,运行中保留)。

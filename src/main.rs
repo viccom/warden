@@ -66,7 +66,5 @@ async fn main() -> anyhow::Result<()> {
 
 /// Phase 1 尚未实现的子命令统一返回友好提示。
 fn bail_unimplemented(cmd: &str, phase: &str) -> anyhow::Result<()> {
-    anyhow::bail!(
-        "`warden {cmd}` 将在 {phase} 实现,当前仅完成 Phase 1(见 docs/ROADMAP.md)"
-    )
+    anyhow::bail!("`warden {cmd}` 将在 {phase} 实现,当前仅完成 Phase 1(见 docs/ROADMAP.md)")
 }

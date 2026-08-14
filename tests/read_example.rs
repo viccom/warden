@@ -14,7 +14,10 @@ fn example_config_parses_with_rsiot_trio() {
     let names: Vec<&str> = cfg.services.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"rs-iot"), "应含 rs-iot,实际:{names:?}");
     assert!(names.contains(&"reasonix"), "应含 reasonix,实际:{names:?}");
-    assert!(names.contains(&"rsiot-gateway"), "应含 rsiot-gateway,实际:{names:?}");
+    assert!(
+        names.contains(&"rsiot-gateway"),
+        "应含 rsiot-gateway,实际:{names:?}"
+    );
 
     // 三件套默认 auto_start
     for svc in &cfg.services {

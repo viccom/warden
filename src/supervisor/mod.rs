@@ -19,7 +19,7 @@ use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
-use crate::error::{WardenError, WResult};
+use crate::error::{WResult, WardenError};
 use crate::logs::{LogHub, RollingFile};
 use crate::model::{ProcMetrics, ProcState, ServiceConfig};
 

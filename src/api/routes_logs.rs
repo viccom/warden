@@ -31,7 +31,9 @@ pub async fn logs(
 ) -> WResult<impl IntoResponse> {
     let hub = st.supervisor.log_hub(&name)?;
     let lines = hub.snapshot(q.tail);
-    Ok(Json(json!({ "name": name, "tail": q.tail, "lines": lines })))
+    Ok(Json(
+        json!({ "name": name, "tail": q.tail, "lines": lines }),
+    ))
 }
 
 /// SSE 实时日志流(订阅 LogHub 的 broadcast)。

@@ -1,9 +1,9 @@
 //! OS 服务注册:Windows Service / systemd unit。
 
-#[cfg(windows)]
-pub mod windows;
 #[cfg(unix)]
 pub mod systemd;
+#[cfg(windows)]
+pub mod windows;
 
 /// 安装为 OS 服务(Windows: `sc create` / Linux: 写 systemd unit)。需管理员/root。
 pub fn install() -> anyhow::Result<()> {
