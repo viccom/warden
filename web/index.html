@@ -117,7 +117,14 @@ async function loadServices() {
     const data = await api('/api/v1/services');
     currentList = data.services || [];
     renderServices(currentList);
-  } catch (e) { /* health 会提示 */ }
+  } catch (e) {
+    // 静默失败会让列表永远"加载中"(实测:配了 token 未填时 401)——明确提示
+    const hint = e.message && e.message.includes('401')
+      ? '需要鉴权:请在上方填写 token 并保存'
+      : e.message || String(e);
+    document.getElementById('services').innerHTML =
+      '<div class="empty">加载失败:' + hint + '</div>';
+  }
 }
 function renderServices(list) {
   const box = document.getElementById('services');
