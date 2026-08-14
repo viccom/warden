@@ -1,0 +1,210 @@
+//! API 集成测试:用 tower oneshot 直接打 build_router(不发真实网络请求)。
+
+mod common;
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use axum::body::{to_bytes, Body};
+use axum::http::{Request, StatusCode};
+use tower::ServiceExt;
+
+use warden::api::{build_router, build_state};
+use warden::config::Config;
+use warden::model::{RestartPolicy, ServiceConfig};
+use warden::supervisor::Supervisor;
+
+fn service(name: &str, cmd: &str, args: Vec<String>) -> ServiceConfig {
+    ServiceConfig {
+        name: name.into(),
+        display_name: String::new(),
+        description: String::new(),
+        command: cmd.into(),
+        args,
+        working_dir: None,
+        environment: HashMap::new(),
+        auto_start: false,
+        auto_restart: false,
+        restart: RestartPolicy::default(),
+        health: None,
+        ui_url: None,
+    }
+}
+
+fn app_with(services: Vec<ServiceConfig>, token: Option<&str>) -> (axum::Router, Arc<Supervisor>) {
+    let mut cfg = Config {
+        services,
+        daemon: Default::default(),
+    };
+    if let Some(t) = token {
+        cfg.daemon.auth_token = t.into();
+    }
+    let state = build_state(cfg, None);
+    let sv = state.supervisor.clone();
+    (build_router(state), sv)
+}
+
+async fn body_string(resp: axum::http::Response<Body>) -> String {
+    let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+async fn wait_running(sv: &Supervisor, name: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if sv.status(name).map(|s| s.state.is_running()).unwrap_or(false) {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("{name} 未进入 running");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn health_ok_without_auth() {
+    let (app, _sv) = app_with(vec![], None);
+    let resp = app
+        .oneshot(Request::builder().uri("/api/v1/health").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+    assert!(body.contains("\"status\":\"ok\""));
+}
+
+#[tokio::test]
+async fn list_returns_registered_services() {
+    let (cmd, args) = common::long_runner();
+    let (app, _sv) = app_with(vec![service("alpha", &cmd, args)], None);
+    let resp = app
+        .oneshot(Request::builder().uri("/api/v1/services").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(body_string(resp).await.contains("alpha"));
+}
+
+#[tokio::test]
+async fn start_then_stop_via_api() {
+    let (cmd, args) = common::long_runner();
+    let (app, sv) = app_with(vec![service("beta", &cmd, args)], None);
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/services/beta/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    wait_running(&sv, "beta").await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/services/beta/stop")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(sv.status("beta").unwrap().state.name(), "stopped");
+}
+
+#[tokio::test]
+async fn unknown_service_returns_404() {
+    let (app, _sv) = app_with(vec![], None);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/services/nope/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn logs_snapshot_after_start() {
+    let (cmd, args) = common::long_runner();
+    let (app, sv) = app_with(vec![service("loggy", &cmd, args)], None);
+
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/services/loggy/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_running(&sv, "loggy").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/services/loggy/logs?tail=50")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+    assert!(body.contains("lines"));
+    let _ = sv.stop("loggy").await;
+}
+
+#[tokio::test]
+async fn auth_rejects_without_token_when_configured() {
+    let (cmd, args) = common::long_runner();
+    let (app, _sv) = app_with(vec![service("x", &cmd, args)], Some("secret"));
+    let resp = app
+        .oneshot(Request::builder().uri("/api/v1/services").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn auth_accepts_with_correct_token_and_health_is_public() {
+    let (cmd, args) = common::long_runner();
+    let (app, _sv) = app_with(vec![service("x", &cmd, args)], Some("secret"));
+
+    // health 即便配置了 token 也放行
+    let resp = app
+        .clone()
+        .oneshot(Request::builder().uri("/api/v1/health").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 带 token 访问受保护端点
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/services")
+                .header("authorization", "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}

@@ -1,0 +1,54 @@
+# warden 服务配置示例 —— rs-iot 现场三件套
+#
+# 用法:
+#   warden run --config config/services.example.toml
+#
+# 路径以现场部署根 E:\rsiot-field 为例,按你的实际环境调整。
+# [daemon] 控制监护器自身;每个 [[service]] 是一个被监护进程。
+
+[daemon]
+api_bind   = "127.0.0.1:8789"           # HTTP API 监听(本地)
+auth_token = "warden-secret-change-me"  # 留空 "" 则不鉴权
+data_dir   = "./data"                    # 日志/状态根目录
+log_dir    = "./logs"                    # warden 自身日志目录
+
+# ── 1. rs-iot 主程序 ──────────────────────────────────────────
+# REST :8790 / lux :6390,工业 IoT 边缘网关核心。
+# 必须从部署根启动(scripts/data/logs 为 cwd 相对路径)。
+[[service]]
+name         = "rs-iot"
+display_name = "rs-iot 主程序"
+description  = "REST :8790 / lux :6390"
+command      = "E:/rsiot-field/bin/rs-iot.exe"
+args         = ["--config", "config.toml"]
+working_dir  = "E:/rsiot-field"
+auto_start   = true
+auto_restart = false
+
+# ── 2. Reasonix AI Agent ─────────────────────────────────────
+# node + npm 全局包的 cmd shim,需通过 cmd /c 启动。
+# work/ 为工作目录(单会话)。
+# 如需把 node/nvm 加入 PATH,在本 service 块下追加:
+#   [service.environment]
+#   PATH = "C:\\nvm\\...;C:\\Windows\\System32;..."
+[[service]]
+name         = "reasonix"
+display_name = "Reasonix AI Agent"
+description  = "AI Agent 后端 :8787,单会话"
+command      = "cmd"
+args         = ["/c", "reasonix", "serve", "--addr", "127.0.0.1:8787", "--auth", "token", "--token", "test-serve-token-123"]
+working_dir  = "E:/rsiot-field/work"
+auto_start   = true
+auto_restart = false
+
+# ── 3. rsiot-gateway 前端网关 ────────────────────────────────
+# 嵌入前端 + 反代到 rs-iot :8790 / reasonix :8787。
+[[service]]
+name         = "rsiot-gateway"
+display_name = "前端 + 反代网关"
+description  = ":8080,嵌入前端 + 反代"
+command      = "E:/rsiot-field/bin/rsiot-gateway.exe"
+args         = ["gateway.toml"]
+working_dir  = "E:/rsiot-field"
+auto_start   = true
+auto_restart = false
