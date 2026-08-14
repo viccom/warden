@@ -26,17 +26,14 @@ auto_start   = true
 auto_restart = false
 
 # ── 2. Reasonix AI Agent ─────────────────────────────────────
-# node + npm 全局包的 cmd shim,需通过 cmd /c 启动。
-# work/ 为工作目录(单会话)。
-# 如需把 node/nvm 加入 PATH,在本 service 块下追加:
-#   [service.environment]
-#   PATH = "C:\\nvm\\...;C:\\Windows\\System32;..."
+# 官方 Go 单二进制(直接调用,不走 cmd /c + node,stop 时 warden 直接 kill 无孤儿)。
+# work/ 为工作目录(单会话)。reasonix 自身配置在 %APPDATA%\reasonix\config.toml。
 [[service]]
 name         = "reasonix"
 display_name = "Reasonix AI Agent"
-description  = "AI Agent 后端 :8787,单会话"
-command      = "cmd"
-args         = ["/c", "reasonix", "serve", "--addr", "127.0.0.1:8787", "--auth", "token", "--token", "test-serve-token-123"]
+description  = "AI Agent 后端 :8787,单会话(Go 官方单二进制)"
+command      = "E:/rsiot-field/bin/reasonix.exe"
+args         = ["serve", "-addr", "127.0.0.1:8787", "-auth", "token", "-token", "test-serve-token-123"]
 working_dir  = "E:/rsiot-field/work"
 auto_start   = true
 auto_restart = false

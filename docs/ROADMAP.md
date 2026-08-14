@@ -72,8 +72,8 @@
 ## Phase 4 —— 增强
 
 - [ ] TCP/HTTP 健康检查完整实现 + 告警(webhook / 日志)
-- [ ] 优雅停止(Linux SIGTERM→SIGKILL / Windows GenerateConsoleCtrlEvent)
-- [ ] **杀进程树(Phase 1 已知局限)**:`stop` 的 TerminateProcess 只杀直接子进程;被监护程序若 spawn 子进程(如 `cmd /c reasonix → node`),孙子会残留孤儿(e2e 已验证:孤儿跑满 ping 时长)。需用 Windows Job Object(KILL_ON_JOB_CLOSE)杀整棵进程树
+- [ ] **优雅停止(Phase 1 实测:对 rs-iot 是数据安全关键,非可选)**:当前 `stop` 用 TerminateProcess **强杀**,被监护服务无 graceful 机会。rs-iot 强杀会**跳过 lux SAVE**(丢最后一个 `save_interval` 的数据 + WAL 不截断)——这是数据风险。需 Linux SIGTERM→SIGKILL / Windows GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT)给服务 graceful 机会 + 超时后强杀。**优先级因此提升**。
+- [ ] **杀进程树(Phase 1 实测)**:`stop` 的 TerminateProcess 只杀直接子进程。npm 版 reasonix(`cmd /c reasonix → node`)实测会留 3 个 node.exe 孤儿。**已通过配置规避**:reasonix 改用官方 Go 单二进制(直接进程,stop 干净,实测 :8787 立即 000 无残留)。Windows Job Object(KILL_ON_JOB_CLOSE)仍作为通用兜底,应对未来其他 cmd/sh 包装的服务。
 - [ ] 运行时配置 CRUD(POST/PUT/DELETE `/services`,免改文件)
 - [ ] Web 前端(复用已就绪 API,rust-embed 嵌入,参考 rs-iot gateway)
 - [ ] desired-state 持久化(daemon 重启后恢复期望状态)
@@ -86,3 +86,5 @@
 - **2026-08-14**:仓库初始化。完成 Phase 1 第 0 步(脚手架 + DESIGN.md + ROADMAP.md + services.example.toml)。技术栈对齐 rs-iot,架构定为自带监护 + daemon 自注册 OS 服务(P2)。
 - **2026-08-14(续)**:完成 Phase 1 第 1-5 步(error / model / config / logs / supervisor + 22 测试全绿,e2e 0.68s)。发现并记录局限:`stop` 不杀进程树(cmd 包装的孙子孤儿),Phase 4 用 Job Object 解决。
 - **2026-08-14(完)**:**Phase 1 全部完成**。第 6-10 步(metrics / api+鉴权+SSE / run_app+tracing+graceful / example 验证 / clippy clean)。累计 31 测试全绿,冒烟测试验证 warden run 全链路可用。下一步 Phase 2。
+- **2026-08-14(真实验证)**:用真实 rs-iot 三件套验证 Phase 1。✅ 三件套全部拉起/监护/日志捕获/metrics/直接 exe 干净 stop 全工作。⚠️ 实测确认两个 Phase 4 关键项并**调整优先级**:① reasonix(cmd→node)stop 后 node 孤儿(:8787 仍 200);② **stop 强杀使 rs-iot 跳过 lux SAVE(数据风险)→ 优雅停止对 rs-iot 是数据安全关键,优先级提升到 Phase 2 之前考虑**。
+- **2026-08-14(reasonix Go 二进制)**:reasonix 改用官方 Go 单二进制(`E:\rsiot-field\bin\reasonix.exe` v1.25.1),`services.example.toml` 去掉 `cmd /c` 包装。实测 stop reasonix 后 :8787 立即 000、无 node/reasonix 残留——**孤儿问题在配置层面解决**(不依赖 Phase 4 Job Object)。CLI 用单横杠参数 `-addr`/`-auth`/`-token`。
