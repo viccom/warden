@@ -12,7 +12,13 @@ use warden::model::{RestartPolicy, ServiceConfig};
 use warden::supervisor::Supervisor;
 use warden::WardenError;
 
-fn make_config(name: &str, cmd: &str, args: Vec<String>, auto_restart: bool, max_retries: u32) -> ServiceConfig {
+fn make_config(
+    name: &str,
+    cmd: &str,
+    args: Vec<String>,
+    auto_restart: bool,
+    max_retries: u32,
+) -> ServiceConfig {
     ServiceConfig {
         name: name.into(),
         display_name: String::new(),
@@ -33,6 +39,7 @@ fn make_config(name: &str, cmd: &str, args: Vec<String>, auto_restart: bool, max
         health: None,
         ui_url: None,
         graceful_timeout_secs: 1,
+        output_encoding: None,
     }
 }
 
@@ -54,7 +61,10 @@ async fn wait_for_state(sv: &Supervisor, name: &str, want: &str, timeout: Durati
             }
         }
         if Instant::now() >= deadline {
-            let cur = sv.status(name).map(|s| s.state.name().to_string()).unwrap_or_default();
+            let cur = sv
+                .status(name)
+                .map(|s| s.state.name().to_string())
+                .unwrap_or_default();
             panic!("等待 {name} 进入「{want}」超时,当前为「{cur}」");
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -102,7 +112,10 @@ async fn quick_exit_with_restart_hits_limit() {
 async fn start_unknown_service_returns_not_found() {
     let sv = Supervisor::new(PathBuf::from(""));
     let err = sv.start("nope").await.unwrap_err();
-    assert!(matches!(err, WardenError::ServiceNotFound(_)), "应为 ServiceNotFound,实际:{err:?}");
+    assert!(
+        matches!(err, WardenError::ServiceNotFound(_)),
+        "应为 ServiceNotFound,实际:{err:?}"
+    );
 }
 
 #[tokio::test]

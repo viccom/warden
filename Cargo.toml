@@ -1,5 +1,6 @@
 [package]
 name = "warden"
+default-run = "warden"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.81"
@@ -20,6 +21,11 @@ path = "src/main.rs"
 [[bin]]
 name = "graceful_target"
 path = "tests/helpers/graceful_target.rs"
+
+# 测试辅助二进制:向 stdout 输出 GBK 编码中文,验证 output_encoding 解码
+[[bin]]
+name = "gbk_target"
+path = "tests/helpers/gbk_target.rs"
 
 [dependencies]
 # 与 rs-iot 同版本栈,便于统一维护
@@ -45,6 +51,8 @@ chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6"
 sysinfo = "0.32"
 directories = "5"
+# 子进程输出编码解码(GBK/CP936 等中文编码),Phase 2
+encoding_rs = "0.8"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
@@ -57,6 +65,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Console",
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [target.'cfg(unix)'.dependencies]

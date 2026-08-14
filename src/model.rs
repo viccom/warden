@@ -46,6 +46,11 @@ pub struct ServiceConfig {
     /// 优雅停止等待秒数:发信号后给目标 graceful 的时限,超时则强杀整棵进程树。
     #[serde(default = "default_graceful_timeout_secs")]
     pub graceful_timeout_secs: u64,
+    /// 子进程 stdout/stderr 文本编码(如 "gbk"/"cp936"/"utf-8");None=UTF-8。
+    /// 中文 Windows 控制台程序常输出 GBK,设此项以正确解码(否则中文行会丢失)。
+    /// 不支持 UTF-16(其行内字节含 0x0A,无法按行切分)。
+    #[serde(default)]
+    pub output_encoding: Option<String>,
 }
 
 fn default_graceful_timeout_secs() -> u64 {
@@ -126,14 +131,20 @@ pub enum ProcState {
     #[default]
     Stopped,
     Starting,
-    Running { pid: u32, started_at: DateTime<Utc> },
+    Running {
+        pid: u32,
+        started_at: DateTime<Utc>,
+    },
     Stopping,
     Failed {
         reason: String,
         exit_code: Option<i32>,
         at: DateTime<Utc>,
     },
-    Restarting { attempt: u32, next_at: DateTime<Utc> },
+    Restarting {
+        attempt: u32,
+        next_at: DateTime<Utc>,
+    },
 }
 
 impl ProcState {
@@ -189,5 +200,4 @@ mod tests {
         assert!(running.is_running());
         assert_eq!(running.name(), "running");
     }
-
 }

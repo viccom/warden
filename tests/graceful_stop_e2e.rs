@@ -26,6 +26,7 @@ fn svc(name: &str, cmd: &str, args: Vec<String>, graceful_timeout: u64) -> Servi
         health: None,
         ui_url: None,
         graceful_timeout_secs: graceful_timeout,
+        output_encoding: None,
     }
 }
 
@@ -40,7 +41,11 @@ fn supervisor_with(svc: ServiceConfig) -> Supervisor {
 async fn wait_running(sv: &Supervisor, name: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if sv.status(name).map(|s| s.state.is_running()).unwrap_or(false) {
+        if sv
+            .status(name)
+            .map(|s| s.state.is_running())
+            .unwrap_or(false)
+        {
             return;
         }
         assert!(Instant::now() < deadline, "{name} 未进入 running");
@@ -64,8 +69,8 @@ async fn wait_state(sv: &Supervisor, name: &str, want: &str, timeout: Duration) 
 /// 标记文件存在 = helper 收到了 CTRL_C_EVENT 并执行了 graceful 代码(非被强杀)。
 #[tokio::test]
 async fn graceful_stop_sends_ctrl_c_and_target_exits_cleanly() {
-    let marker = std::env::temp_dir()
-        .join(format!("warden-graceful-{}.marker", std::process::id()));
+    let marker =
+        std::env::temp_dir().join(format!("warden-graceful-{}.marker", std::process::id()));
     let _ = std::fs::remove_file(&marker);
 
     let sv = supervisor_with(svc(
@@ -118,8 +123,7 @@ async fn force_kill_after_graceful_timeout() {
 /// stubborn helper(收到信号不退)+ 子进程 → force_kill 杀整棵树(Job Object)。
 #[tokio::test]
 async fn force_kill_terminates_process_tree() {
-    let marker = std::env::temp_dir()
-        .join(format!("warden-tree-{}.marker", std::process::id()));
+    let marker = std::env::temp_dir().join(format!("warden-tree-{}.marker", std::process::id()));
     let _ = std::fs::remove_file(&marker);
 
     let sv = supervisor_with(svc(

@@ -24,6 +24,7 @@ args         = ["--config", "config.toml"]
 working_dir  = "E:/rsiot-field"
 auto_start   = true
 auto_restart = false
+# output_encoding = "gbk"   # 中文 Windows 控制台程序若中文日志丢失/乱码,设此项
 
 # ── 2. Reasonix AI Agent ─────────────────────────────────────
 # 官方 Go 单二进制(直接调用,不走 cmd /c + node,stop 时 warden 直接 kill 无孤儿)。

@@ -30,6 +30,7 @@ fn service(name: &str, cmd: &str, args: Vec<String>) -> ServiceConfig {
         health: None,
         ui_url: None,
         graceful_timeout_secs: 1,
+        output_encoding: None,
     }
 }
 
@@ -54,7 +55,11 @@ async fn body_string(resp: axum::http::Response<Body>) -> String {
 async fn wait_running(sv: &Supervisor, name: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if sv.status(name).map(|s| s.state.is_running()).unwrap_or(false) {
+        if sv
+            .status(name)
+            .map(|s| s.state.is_running())
+            .unwrap_or(false)
+        {
             return;
         }
         if Instant::now() >= deadline {
@@ -68,7 +73,12 @@ async fn wait_running(sv: &Supervisor, name: &str) {
 async fn health_ok_without_auth() {
     let (app, _sv) = app_with(vec![], None);
     let resp = app
-        .oneshot(Request::builder().uri("/api/v1/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -81,7 +91,12 @@ async fn list_returns_registered_services() {
     let (cmd, args) = common::long_runner();
     let (app, _sv) = app_with(vec![service("alpha", &cmd, args)], None);
     let resp = app
-        .oneshot(Request::builder().uri("/api/v1/services").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/services")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -177,7 +192,12 @@ async fn auth_rejects_without_token_when_configured() {
     let (cmd, args) = common::long_runner();
     let (app, _sv) = app_with(vec![service("x", &cmd, args)], Some("secret"));
     let resp = app
-        .oneshot(Request::builder().uri("/api/v1/services").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/services")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -191,7 +211,12 @@ async fn auth_accepts_with_correct_token_and_health_is_public() {
     // health 即便配置了 token 也放行
     let resp = app
         .clone()
-        .oneshot(Request::builder().uri("/api/v1/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);

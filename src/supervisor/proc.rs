@@ -36,14 +36,16 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
         let pid = child.id();
         let pgid = pid.unwrap_or(0);
 
-        // 接管输出:两个 reader task 把 stdout/stderr 按行推入 LogHub
+        // 接管输出:两个 reader task 把 stdout/stderr 按行解码后推入 LogHub。
+        // 解码编码按 output_encoding 解析(默认 UTF-8),GBK 等中文编码不再丢行。
+        let encoding = resolve_encoding(&handle.config.output_encoding);
         if let Some(out) = child.stdout.take() {
             let log = Arc::clone(&handle.log);
-            tokio::spawn(pipe_reader(out, log, LogStream::Stdout));
+            tokio::spawn(pipe_reader(out, log, LogStream::Stdout, encoding));
         }
         if let Some(err) = child.stderr.take() {
             let log = Arc::clone(&handle.log);
-            tokio::spawn(pipe_reader(err, log, LogStream::Stderr));
+            tokio::spawn(pipe_reader(err, log, LogStream::Stderr, encoding));
         }
 
         // 进程树追踪:创建 Job Object / 进程组,assign 子进程,存入 ProcInner
@@ -132,9 +134,10 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
             return;
         }
 
-        handle
-            .log
-            .push(LogStream::Stderr, format!("[warden] 进程退出 code={exit_code:?}"));
+        handle.log.push(
+            LogStream::Stderr,
+            format!("[warden] 进程退出 code={exit_code:?}"),
+        );
 
         // 未启用自动重启 → Failed
         if !handle.config.auto_restart {
@@ -168,9 +171,10 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
             g.state = ProcState::Restarting { attempt, next_at };
             (attempt, delay)
         };
-        handle
-            .log
-            .push(LogStream::Stdout, format!("[warden] {delay}ms 后第 {attempt} 次重启"));
+        handle.log.push(
+            LogStream::Stdout,
+            format!("[warden] {delay}ms 后第 {attempt} 次重启"),
+        );
 
         // backoff 期间仍响应主动停止
         tokio::select! {
@@ -199,15 +203,97 @@ fn spawn_child(config: &crate::model::ServiceConfig) -> std::io::Result<tokio::p
     cmd.spawn()
 }
 
-/// 把子进程输出流按行推入 LogHub,流结束(EOF)时自然退出。
+/// 把子进程输出流按行解码后推入 LogHub,流结束(EOF)时自然退出。
+///
+/// 用 `read_until(b'\n')` 读原始字节行,再按 `encoding` 解码——而非
+/// `BufReader::lines()`(它强制 UTF-8,遇非法字节报错导致整行静默丢失)。
+/// 行切分安全:GBK 双字节尾字节、UTF-8 continuation 均不含 0x0A(不支持 UTF-16)。
+/// 非法字节以 U+FFFD 替换(而非丢整行),与原行为相比对坏数据更友好。
 async fn pipe_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     stream: R,
     log: Arc<LogHub>,
     kind: LogStream,
+    encoding: &'static encoding_rs::Encoding,
 ) {
     use tokio::io::AsyncBufReadExt;
-    let mut lines = tokio::io::BufReader::new(stream).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        log.push(kind, line);
+    let mut reader = tokio::io::BufReader::new(stream);
+    let mut buf: Vec<u8> = Vec::with_capacity(1024);
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                // 去掉行尾换行符(\n 及前导 \r),与原 lines() 行为一致
+                let mut end = buf.len();
+                while end > 0 && (buf[end - 1] == b'\n' || buf[end - 1] == b'\r') {
+                    end -= 1;
+                }
+                let (text, _, _) = encoding.decode(&buf[..end]);
+                if !text.is_empty() {
+                    log.push(kind, text.into_owned());
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+/// 解析配置的编码标签为 encoding_rs 编码;None/空/未识别均回退 UTF-8。
+fn resolve_encoding(name: &Option<String>) -> &'static encoding_rs::Encoding {
+    match name.as_deref() {
+        None | Some("") => encoding_rs::UTF_8,
+        Some(label) => encoding_rs::Encoding::for_label(label.as_bytes()).unwrap_or_else(|| {
+            tracing::warn!("[supervisor] 未知输出编码 '{label}',回退 UTF-8");
+            encoding_rs::UTF_8
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::logs::{LogHub, LogStream};
+    use std::sync::Arc;
+    use tokio::io::AsyncWriteExt;
+
+    /// 验证意图:中文 Windows 控制台程序输出 GBK,warden 必须正确解码而非丢行。
+    #[tokio::test]
+    async fn pipe_reader_decodes_gbk_output() {
+        let (mut tx, rx) = tokio::io::duplex(1024);
+        let log = Arc::new(LogHub::new(None));
+        // "你好,warden" 的 GBK 编码 + CRLF 行尾
+        let (line1, _, _) = encoding_rs::GBK.encode("你好,warden\r\n");
+        tx.write_all(&line1).await.unwrap();
+        // 第二行验证按 \n 切分(GBK 双字节不含 0x0A,切分安全)
+        let (line2, _, _) = encoding_rs::GBK.encode("再见\n");
+        tx.write_all(&line2).await.unwrap();
+        drop(tx); // 关闭发送端触发 EOF
+
+        pipe_reader(rx, Arc::clone(&log), LogStream::Stdout, encoding_rs::GBK).await;
+
+        let snap = log.snapshot(10);
+        assert_eq!(snap.len(), 2, "应为 2 行,实际 {snap:?}");
+        assert!(snap[0].text.contains("你好"), "第1行解码:{}", snap[0].text);
+        assert!(!snap[0].text.contains('\n'), "行尾换行应被去除");
+        assert!(!snap[0].text.contains('\r'), "行尾回车应被去除");
+        assert!(snap[1].text.contains("再见"), "第2行解码:{}", snap[1].text);
+    }
+
+    /// 验证意图:默认 UTF-8 解码不被破坏(改动回归保护)。
+    #[tokio::test]
+    async fn pipe_reader_preserves_utf8() {
+        let (mut tx, rx) = tokio::io::duplex(1024);
+        let log = Arc::new(LogHub::new(None));
+        tx.write_all("第一行\nsecond line\n".as_bytes())
+            .await
+            .unwrap();
+        drop(tx);
+
+        pipe_reader(rx, Arc::clone(&log), LogStream::Stdout, encoding_rs::UTF_8).await;
+
+        let snap = log.snapshot(10);
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0].text, "第一行");
+        assert_eq!(snap[1].text, "second line");
     }
 }
