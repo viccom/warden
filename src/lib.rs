@@ -75,12 +75,17 @@ pub async fn run_app_with_shutdown(
         cfg.services.len()
     );
 
+    let alert_webhook = cfg.daemon.alert_webhook.clone();
     let state = api::build_state(cfg, config_path);
     state.supervisor.start_auto().await;
+    // 恢复期望状态:desired_state.json 中 true 的服务(auto_start 已启动的幂等跳过)
+    state.supervisor.start_desired().await;
     state
         .supervisor
         .clone()
         .spawn_metrics(Duration::from_secs(2));
+    // 健康检查 task(配了 health 的 Running 服务周期 TCP 探测 + 迁移告警)
+    crate::supervisor::health::spawn_health(state.supervisor.clone(), alert_webhook);
 
     let supervisor = state.supervisor.clone();
     let app = api::build_router(state);

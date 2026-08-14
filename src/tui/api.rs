@@ -22,9 +22,36 @@ pub struct ServiceView {
     #[serde(default)]
     pub metrics: MetricsView,
     #[serde(default)]
+    pub health: ServiceHealthView,
+    #[serde(default)]
+    pub last_exit: Option<LastExitView>,
+    #[serde(default)]
     pub auto_start: bool,
     #[serde(default)]
     pub auto_restart: bool,
+    /// 环境变量(daemon 全局已烘入;详情面板展示)。
+    #[serde(default)]
+    pub environment: std::collections::HashMap<String, String>,
+}
+
+/// 健康检查结果(backend HealthStatus)。
+#[derive(Clone, Deserialize, Debug, Default)]
+pub struct ServiceHealthView {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub consecutive_failures: u32,
+}
+
+/// 最近一次自然退出。
+#[derive(Clone, Deserialize, Debug)]
+pub struct LastExitView {
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+    #[serde(default)]
+    pub at: String,
 }
 
 impl ServiceView {

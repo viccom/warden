@@ -173,6 +173,35 @@ pub struct ProcMetrics {
     pub sampled_at: Option<DateTime<Utc>>,
 }
 
+/// 健康检查结果(由 health task 周期填充)。
+#[derive(Serialize, Clone, Debug)]
+pub struct HealthStatus {
+    /// "unknown"(未检查/刚启动)/ "healthy" / "unhealthy"。
+    pub status: String,
+    pub last_check: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    /// 连续失败次数(healthy 时为 0)。
+    pub consecutive_failures: u32,
+}
+
+impl Default for HealthStatus {
+    fn default() -> Self {
+        Self {
+            status: "unknown".into(),
+            last_check: None,
+            last_error: None,
+            consecutive_failures: 0,
+        }
+    }
+}
+
+/// 最近一次进程退出记录(重启后仍保留,供排查)。
+#[derive(Serialize, Clone, Debug)]
+pub struct LastExit {
+    pub exit_code: Option<i32>,
+    pub at: DateTime<Utc>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

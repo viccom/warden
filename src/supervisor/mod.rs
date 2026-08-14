@@ -5,11 +5,13 @@
 //! 监听退出并按 `RestartPolicy` 决策重启。`stop` 通过 `CancellationToken`
 //! 通知 task 主动终止(强制 kill)。设计见 docs/DESIGN.md §6。
 
+pub mod health;
 pub mod metrics;
 pub mod proc;
 pub mod signal;
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::Config;
 use crate::error::{WResult, WardenError};
 use crate::logs::{LogHub, RollingFile};
-use crate::model::{ProcMetrics, ProcState, ServiceConfig};
+use crate::model::{HealthStatus, LastExit, ProcMetrics, ProcState, ServiceConfig};
 
 /// 监护引擎,持有所有被监护服务。
 pub struct Supervisor {
@@ -99,6 +101,7 @@ impl Supervisor {
             let cancel = CancellationToken::new();
             g.cancel = Some(cancel.clone());
             g.restart_count = 0; // 手动 start 重置计数
+            g.health = HealthStatus::default(); // 新进程健康状态未知,待 health task 首查
             g.state = ProcState::Starting;
             cancel
         };
@@ -145,6 +148,87 @@ impl Supervisor {
             .collect();
         for n in names {
             let _ = self.start(&n).await;
+        }
+    }
+
+    /// 移除服务(仅 Stopped/Failed 可移除;运行中/重启中返回 InvalidState)。
+    pub fn remove(&self, name: &str) -> WResult<()> {
+        let handle = self.get(name)?;
+        {
+            let g = handle.inner.lock().unwrap();
+            match &g.state {
+                ProcState::Stopped | ProcState::Failed { .. } => {}
+                other => {
+                    return Err(WardenError::InvalidState(
+                        name.into(),
+                        format!("当前为「{}」无法删除,请先停止", other.name()),
+                    ))
+                }
+            }
+        }
+        self.handles.remove(name);
+        Ok(())
+    }
+
+    /// 更新服务配置(仅 Stopped/Failed 可改;remove + add 语义,重启后生效)。
+    pub fn update(&self, config: ServiceConfig) -> WResult<()> {
+        let name = config.name.clone();
+        self.remove(&name)?;
+        self.add(config);
+        Ok(())
+    }
+
+    // ── desired-state 持久化(daemon 重启后恢复期望状态)──────────────
+    // 仅用户显式操作(API start/stop/start-all/stop-all)标记;
+    // daemon 优雅停机的 stop_all 不清除,重启后 start_desired 恢复。
+
+    fn desired_path(&self) -> Option<PathBuf> {
+        if self.data_dir.as_os_str().is_empty() {
+            None
+        } else {
+            Some(self.data_dir.join("desired_state.json"))
+        }
+    }
+
+    fn read_desired_map(p: &Path) -> HashMap<String, bool> {
+        std::fs::read_to_string(p)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// 标记服务的期望运行状态并落盘(data_dir 未配置则跳过)。
+    pub fn set_desired(&self, name: &str, running: bool) {
+        if let Some(p) = self.desired_path() {
+            let mut m = Self::read_desired_map(&p);
+            m.insert(name.to_string(), running);
+            match serde_json::to_string_pretty(&m) {
+                Ok(s) => {
+                    if let Err(e) = std::fs::write(&p, s) {
+                        tracing::warn!("[supervisor] desired 落盘失败:{e}");
+                    }
+                }
+                Err(e) => tracing::warn!("[supervisor] desired 序列化失败:{e}"),
+            }
+        }
+    }
+
+    /// 启动 desired=true 且当前未运行的服务(daemon 启动时在 start_auto 之后调用)。
+    pub async fn start_desired(&self) {
+        let Some(p) = self.desired_path() else {
+            return;
+        };
+        for (name, want) in Self::read_desired_map(&p) {
+            if !want {
+                continue;
+            }
+            if let Ok(h) = self.get(&name) {
+                let running = h.inner.lock().unwrap().state.is_running();
+                if !running {
+                    tracing::info!("[warden] 恢复期望状态:启动 {name}");
+                    let _ = self.start(&name).await;
+                }
+            }
         }
     }
 
@@ -221,6 +305,10 @@ pub(crate) struct ProcInner {
     pub restart_count: u32,
     pub last_started_at: Option<DateTime<Utc>>,
     pub metrics: ProcMetrics,
+    /// 健康检查结果(health task 周期填充;start 时重置 unknown)。
+    pub health: HealthStatus,
+    /// 最近一次自然退出(崩溃/正常退出;主动 stop 不记)。
+    pub last_exit: Option<LastExit>,
     pub cancel: Option<CancellationToken>,
     pub task: Option<tokio::task::JoinHandle<()>>,
     /// 进程树追踪(Windows Job Object / Unix 进程组):stop 时强杀 + 崩溃保护。
@@ -237,6 +325,8 @@ impl ProcHandle {
                 restart_count: 0,
                 last_started_at: None,
                 metrics: ProcMetrics::default(),
+                health: HealthStatus::default(),
+                last_exit: None,
                 cancel: None,
                 task: None,
                 job: None,
@@ -253,6 +343,8 @@ impl ProcHandle {
             restart_count: g.restart_count,
             last_started_at: g.last_started_at,
             metrics: g.metrics.clone(),
+            health: g.health.clone(),
+            last_exit: g.last_exit.clone(),
             auto_start: self.config.auto_start,
             auto_restart: self.config.auto_restart,
         }
@@ -291,6 +383,8 @@ pub struct ServiceStatus {
     pub restart_count: u32,
     pub last_started_at: Option<DateTime<Utc>>,
     pub metrics: ProcMetrics,
+    pub health: HealthStatus,
+    pub last_exit: Option<LastExit>,
     pub auto_start: bool,
     pub auto_restart: bool,
 }

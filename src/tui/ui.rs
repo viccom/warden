@@ -41,8 +41,12 @@ pub fn draw(f: &mut Frame, app: &App) {
 fn draw_top(f: &mut Frame, app: &App, area: Rect) {
     let dot = "●";
     let (dot_color, conn_text) = match &app.conn {
-        Conn::Ok => (Color::Green, "connected".into()),
-        Conn::Error(e) => (Color::Red, format!("reconnecting({e})")),
+        Conn::Ok => (Color::Green, "连接正常".into()),
+        Conn::Error(e) => {
+            // 截断错误原因,顶栏保持一行(细化:断开 + 重连语义 + 简短原因)
+            let short: String = e.chars().take(40).collect();
+            (Color::Red, format!("断开,重连中({short})"))
+        }
     };
     let running = app
         .services()
@@ -167,6 +171,31 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         if let Some(r) = s.state_reason() {
             lines.push(Line::raw(format!("reason      {r}")));
         }
+        // 健康:色点 + 状态 + 连续失败;最近错误截断
+        let (hcolor, hmark) = match s.health.status.as_str() {
+            "healthy" => (Color::Green, "healthy"),
+            "unhealthy" => (Color::Red, "unhealthy"),
+            _ => (Color::Gray, "unknown"),
+        };
+        lines.push(Line::from(vec![
+            Span::raw("health      "),
+            Span::styled(format!("●{hmark}"), Style::new().fg(hcolor)),
+            Span::raw(format!("  连续失败 {}", s.health.consecutive_failures)),
+        ]));
+        if let Some(e) = &s.health.last_error {
+            let short: String = e.chars().take(48).collect();
+            lines.push(Line::raw(format!("last_error  {short}")));
+        }
+        // 最近一次自然退出(崩溃/正常退出;主动 stop 不记)
+        if let Some(le) = &s.last_exit {
+            let at = le.at.get(11..19).unwrap_or(le.at.as_str());
+            lines.push(Line::raw(format!(
+                "last_exit   code={} at {at}",
+                le.exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "None".into())
+            )));
+        }
         lines.push(Line::raw(format!("auto_start  {}", s.auto_start)));
         lines.push(Line::raw(format!("auto_restart {}", s.auto_restart)));
         lines.push(Line::raw(format!("restarts    {}", s.restart_count)));
@@ -175,6 +204,19 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
             s.metrics.cpu_percent
         )));
         lines.push(Line::raw(format!("memory      {} KB", s.metrics.memory_kb)));
+        // 环境变量(daemon 全局已烘入,service 同名覆盖)
+        if !s.environment.is_empty() {
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                "environment:",
+                Style::new().fg(Color::DarkGray),
+            ));
+            let mut keys: Vec<&String> = s.environment.keys().collect();
+            keys.sort();
+            for k in keys {
+                lines.push(Line::raw(format!("  {}={}", k, s.environment[k])));
+            }
+        }
         lines.push(Line::raw(""));
         lines.push(Line::styled(
             "  s 启动  x 停止  r 重启",

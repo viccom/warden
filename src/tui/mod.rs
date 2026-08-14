@@ -384,8 +384,11 @@ mod tests {
             state: serde_json::json!({"state": "running", "pid": 1}),
             restart_count: 0,
             metrics: api::MetricsView::default(),
+            health: api::ServiceHealthView::default(),
+            last_exit: None,
             auto_start: false,
             auto_restart: false,
+            environment: Default::default(),
         }
     }
 

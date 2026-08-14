@@ -6,7 +6,7 @@
 //!   3. `./config/services.toml`
 //!   4. 平台标准位置(用户级 config dir)
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,12 @@ pub struct DaemonConfig {
     pub data_dir: String,
     #[serde(default = "default_log_dir")]
     pub log_dir: String,
+    /// 健康检查告警 webhook(状态迁移时 POST JSON;空则仅日志)。
+    #[serde(default)]
+    pub alert_webhook: Option<String>,
+    /// 全局环境变量:注入所有被监护进程(service 同名 key 覆盖全局)。
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 fn default_api_bind() -> String {
@@ -53,6 +59,8 @@ impl Default for DaemonConfig {
             auth_token: String::new(),
             data_dir: default_data_dir(),
             log_dir: default_log_dir(),
+            alert_webhook: None,
+            env: HashMap::new(),
         }
     }
 }
@@ -60,8 +68,8 @@ impl Default for DaemonConfig {
 /// 服务名禁用字符(文件系统 / 路径 / Windows 服务名不安全)。
 const NAME_FORBIDDEN: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
 
-/// 校验单个服务配置。返回 Err(msg) 的项会被跳过。
-fn validate_service(svc: &ServiceConfig, seen: &mut HashSet<String>) -> Result<(), String> {
+/// 校验单个服务配置(运行时 CRUD 复用)。返回 Err(msg) 的项会被跳过。
+pub fn validate_service(svc: &ServiceConfig, seen: &mut HashSet<String>) -> Result<(), String> {
     if svc.name.trim().is_empty() {
         return Err("name 为空".into());
     }
@@ -154,6 +162,22 @@ impl Config {
             .map_err(|e| WardenError::Config(format!("读取 {}: {e}", resolved.display())))?;
         tracing::info!("[config] 加载 {}", resolved.display());
         Self::parse(&s)
+    }
+
+    /// 把 `[daemon] env` 全局环境变量烘入每个服务的 environment:
+    /// 仅插入服务未定义的 key(service 同名 key 覆盖全局,经典 supervisor 语义)。
+    /// 烘入后 spawn/API/序列化全链路自然生效;操作幂等。
+    pub fn apply_daemon_env(&mut self) {
+        if self.daemon.env.is_empty() {
+            return;
+        }
+        for svc in &mut self.services {
+            for (k, v) in &self.daemon.env {
+                svc.environment
+                    .entry(k.clone())
+                    .or_insert_with(|| v.clone());
+            }
+        }
     }
 }
 
@@ -271,5 +295,60 @@ command = "/bin/true"
     fn invalid_toml_returns_error() {
         let res = Config::parse("this is not = = valid toml [[[[");
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn daemon_env_injects_and_service_overrides() {
+        let toml = r#"
+[daemon]
+env = { LANG = "zh_CN", WARDEN = "1", OVERRIDE = "global" }
+
+[[service]]
+name = "a"
+command = "/bin/true"
+environment = { OVERRIDE = "service", OWN = "x" }
+"#;
+        let mut cfg = Config::parse(toml).unwrap();
+        cfg.apply_daemon_env();
+        let env = &cfg.services[0].environment;
+        assert_eq!(
+            env.get("LANG").map(String::as_str),
+            Some("zh_CN"),
+            "全局 env 应注入"
+        );
+        assert_eq!(env.get("WARDEN").map(String::as_str), Some("1"));
+        assert_eq!(
+            env.get("OVERRIDE").map(String::as_str),
+            Some("service"),
+            "service 同名 key 覆盖全局"
+        );
+        assert_eq!(
+            env.get("OWN").map(String::as_str),
+            Some("x"),
+            "service 自身 env 保留"
+        );
+        // 幂等:重复烘入不改变结果
+        cfg.apply_daemon_env();
+        assert_eq!(
+            cfg.services[0]
+                .environment
+                .get("OVERRIDE")
+                .map(String::as_str),
+            Some("service")
+        );
+    }
+
+    #[test]
+    fn alert_webhook_default_none_and_parse() {
+        let cfg = Config::parse("[[service]]\nname=\"a\"\ncommand=\"/bin/true\"\n").unwrap();
+        assert!(cfg.daemon.alert_webhook.is_none());
+        let cfg = Config::parse(
+            "[daemon]\nalert_webhook=\"http://127.0.0.1:9/hook\"\n[[service]]\nname=\"a\"\ncommand=\"/bin/true\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.daemon.alert_webhook.as_deref(),
+            Some("http://127.0.0.1:9/hook")
+        );
     }
 }

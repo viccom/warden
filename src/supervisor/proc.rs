@@ -139,6 +139,15 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
             format!("[warden] 进程退出 code={exit_code:?}"),
         );
 
+        // 记录最近一次自然退出(崩溃/正常退出;主动 stop 不经此路径),供 TUI/排查
+        {
+            let mut g = handle.inner.lock().unwrap();
+            g.last_exit = Some(crate::model::LastExit {
+                exit_code,
+                at: Utc::now(),
+            });
+        }
+
         // 未启用自动重启 → Failed
         if !handle.config.auto_restart {
             let mut g = handle.inner.lock().unwrap();
