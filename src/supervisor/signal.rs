@@ -30,6 +30,17 @@ pub fn prepare_command(cmd: &mut Command) {
     }
 }
 
+/// 前台运行时安装 daemon 自身的 Ctrl-C 处理(仅 Windows;Unix 由调用方用 tokio ctrl_c)。
+///
+/// 背景:tokio `ctrl_c()` 的接收端在首次事件后被 drop,之后再次 Ctrl-C 时 tokio 的
+/// console handler 返回 FALSE → Rust std 默认 handler `ExitProcess(0xC000013A)` 强杀
+/// 进程,绕过优雅停止。自有 handler 对 CTRL_C/CTRL_BREAK 永久返回 TRUE(完全拦截),
+/// 多次 Ctrl-C 都只触发 `cancel`,退出始终走 graceful 路径(对齐 rs-iot/graceful_target 模式)。
+#[cfg(windows)]
+pub fn install_console_shutdown(cancel: tokio_util::sync::CancellationToken) -> io::Result<()> {
+    windows_imp::install_console_shutdown(cancel)
+}
+
 /// 创建进程树追踪对象(Windows=Job Object;Unix=无,靠 pgid)。
 pub fn create_job_tree() -> io::Result<JobTree> {
     #[cfg(windows)]
@@ -86,12 +97,15 @@ mod windows_imp {
     use std::io;
 
     use tokio::process::Child;
+    use tokio_util::sync::CancellationToken;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+    use windows_sys::Win32::System::Console::{
+        GenerateConsoleCtrlEvent, SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_C_EVENT,
+    };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        SetInformationJobObject, TerminateJobObject,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
     /// Job Object 句柄。Drop 时 CloseHandle 触发 KILL_ON_JOB_CLOSE(杀整棵进程树)。
@@ -138,6 +152,35 @@ mod windows_imp {
             .ok_or_else(|| io::Error::other("子进程无句柄"))?;
         unsafe {
             if AssignProcessToJobObject(job.0, raw as HANDLE) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
+    /// daemon 自身的 shutdown token(handler 线程访问;install 时写入)。
+    static CONSOLE_SHUTDOWN: std::sync::Mutex<Option<CancellationToken>> =
+        std::sync::Mutex::new(None);
+
+    /// console 事件 handler:CTRL_C/CTRL_BREAK 触发 shutdown 并返回 TRUE(完全拦截,
+    /// 阻止 tokio/std 默认 handler 的 `ExitProcess(0xC000013A)` 强杀);其他事件不处理。
+    extern "system" fn on_console_event(ty: u32) -> i32 {
+        if ty == CTRL_C_EVENT || ty == CTRL_BREAK_EVENT {
+            if let Some(t) = CONSOLE_SHUTDOWN.lock().unwrap().as_ref() {
+                tracing::info!("[warden] 收到 console 中断事件({ty}),触发 shutdown");
+                t.cancel();
+            }
+            1
+        } else {
+            0
+        }
+    }
+
+    /// 注册 daemon 自身的 Ctrl-C handler(幂等:token 以最后一次为准)。
+    pub fn install_console_shutdown(cancel: CancellationToken) -> io::Result<()> {
+        *CONSOLE_SHUTDOWN.lock().unwrap() = Some(cancel);
+        unsafe {
+            if SetConsoleCtrlHandler(Some(on_console_event), 1) == 0 {
                 return Err(io::Error::last_os_error());
             }
         }

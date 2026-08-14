@@ -16,7 +16,7 @@ pub mod model;
 pub mod service;
 pub mod supervisor;
 
-pub use error::{WardenError, WResult};
+pub use error::{WResult, WardenError};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -34,12 +34,29 @@ pub async fn run_app(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     };
     let shutdown = CancellationToken::new();
     let shutdown_tx = shutdown.clone();
-    // 前台:Ctrl-C(SIGINT)触发 graceful
-    tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        tracing::info!("[warden] Ctrl-C 收到,触发 shutdown");
-        shutdown_tx.cancel();
-    });
+    // 前台:Ctrl-C 触发 graceful。
+    // Windows:自有 console handler(CTRL_C/CTRL_BREAK 均拦截)——tokio ctrl_c 的接收端
+    // 在首次事件后 drop,第二次 Ctrl-C 会被 std 默认 handler 以 0xC000013A 强杀,绕过 graceful。
+    #[cfg(windows)]
+    {
+        if let Err(e) = supervisor::signal::install_console_shutdown(shutdown_tx) {
+            tracing::warn!("[warden] 注册 console handler 失败,退回 tokio ctrl_c:{e}");
+            let tx = shutdown.clone();
+            tokio::spawn(async move {
+                let _ = tokio::signal::ctrl_c().await;
+                tracing::info!("[warden] Ctrl-C 收到,触发 shutdown");
+                tx.cancel();
+            });
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("[warden] Ctrl-C 收到,触发 shutdown");
+            shutdown_tx.cancel();
+        });
+    }
     run_app_with_shutdown(cfg, config_path, shutdown).await
 }
 
@@ -59,7 +76,10 @@ pub async fn run_app_with_shutdown(
 
     let state = api::build_state(cfg, config_path);
     state.supervisor.start_auto().await;
-    state.supervisor.clone().spawn_metrics(Duration::from_secs(2));
+    state
+        .supervisor
+        .clone()
+        .spawn_metrics(Duration::from_secs(2));
 
     let supervisor = state.supervisor.clone();
     let app = api::build_router(state);
@@ -77,10 +97,23 @@ pub async fn run_app_with_shutdown(
         stop_sup.stop_all().await;
     });
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move { shutdown.cancelled().await })
-        .await
-        .map_err(|e| anyhow::anyhow!("axum serve error: {e}"))?;
+    // graceful shutdown 设上限:SSE / 日志流等长连接不会主动断开,
+    // 无限等待会卡住退出(实测 UI 页面开着时 Ctrl-C 后进程不退出)。
+    // 注意:上限从 shutdown 触发后起算(先 await cancelled 再 sleep),否则会变成启动 5s 必退。
+    let serve_shutdown = shutdown.clone();
+    let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+        serve_shutdown.cancelled().await;
+    });
+    let drain_limit = shutdown.clone();
+    tokio::select! {
+        r = serve => r.map_err(|e| anyhow::anyhow!("axum serve error: {e}"))?,
+        _ = async move {
+            drain_limit.cancelled().await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        } => {
+            tracing::warn!("[warden] HTTP 连接 5s 内未全部关闭(长连接),强制断开");
+        }
+    }
 
     // 等 stop_all 完成(子进程 graceful 收尾),再退出
     let _ = stop_task.await;
