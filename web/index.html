@@ -50,12 +50,43 @@
   .line .ts { color: var(--muted); flex-shrink: 0; }
   .line.err .text { color: var(--red); }
   .empty { color: var(--muted); padding: 24px; text-align: center; }
+  .addbtn { background: var(--blue); color: var(--bg); border: none; padding: 4px 12px;
+            border-radius: 4px; cursor: pointer; font-weight: 600; }
+  /* modal 表单 */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
+             align-items: center; justify-content: center; z-index: 10; }
+  .modal { background: var(--surface); border: 1px solid var(--surface2); border-radius: 8px;
+           padding: 18px 22px; width: 560px; max-height: 90vh; overflow-y: auto; }
+  .modal h3 { margin: 0 0 14px; }
+  .modal .field { margin-bottom: 10px; }
+  .modal label { display: block; font-size: 12px; color: var(--sub); margin-bottom: 3px; }
+  .modal input[type=text], .modal input[type=number], .modal textarea {
+    width: 100%; background: var(--bg); border: 1px solid var(--surface2); color: var(--text);
+    padding: 6px 8px; border-radius: 4px; font-family: inherit; }
+  .modal textarea { min-height: 56px; resize: vertical; }
+  .modal .row { display: flex; gap: 12px; }
+  .modal .row .field { flex: 1; }
+  .modal .chk { display: flex; gap: 18px; align-items: center; color: var(--sub); }
+  .modal .chk label { display: inline; margin: 0; }
+  .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .modal button { background: var(--surface2); color: var(--text); border: none;
+                  padding: 6px 16px; border-radius: 4px; cursor: pointer; }
+  .modal button.primary { background: var(--blue); color: var(--bg); font-weight: 600; }
+  .modal button.danger { background: var(--red); color: var(--bg); }
+  .modal .err { color: var(--red); font-size: 12px; min-height: 16px; margin-top: 8px; }
+  /* toast */
+  #toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+           background: var(--surface2); color: var(--text); padding: 8px 18px; border-radius: 6px;
+           font-size: 13px; opacity: 0; transition: opacity .25s; z-index: 20; max-width: 80%; }
+  #toast.show { opacity: 1; }
+  #toast.err { background: var(--red); color: var(--bg); }
 </style>
 </head>
 <body>
 <header>
   <div class="brand">warden <small id="ver"></small></div>
   <div class="health"><span id="hdot" class="dot"></span><span id="htext">连接中…</span> · <span id="count"></span></div>
+  <button class="addbtn" onclick="openForm()">+ 新增服务</button>
   <div class="token">
     <input id="tok" type="password" placeholder="token(可选)">
     <button onclick="saveToken()">保存</button>
@@ -73,6 +104,33 @@
     <div id="logs"><div class="empty">未选择服务</div></div>
   </section>
 </main>
+
+<!-- 服务编辑表单(新增/编辑共用) -->
+<div class="overlay" id="formOverlay" style="display:none">
+  <div class="modal">
+    <h3 id="formTitle">新增服务</h3>
+    <div class="field"><label>名称 *</label><input id="f_name" type="text" placeholder="唯一标识(不可含 / \\ : * ? \" < > |)"></div>
+    <div class="field"><label>可执行文件路径 *</label><input id="f_command" type="text" placeholder="如 E:/rsiot-field/bin/rs-iot.exe"></div>
+    <div class="field"><label>参数(每行一个)</label><textarea id="f_args" placeholder="-n&#10;60&#10;127.0.0.1"></textarea></div>
+    <div class="row">
+      <div class="field"><label>工作目录</label><input id="f_workdir" type="text" placeholder="可选"></div>
+      <div class="field"><label>优雅停止超时(秒)</label><input id="f_graceful" type="number" value="10" min="0"></div>
+    </div>
+    <div class="field"><label>输出编码(如 gbk;空=UTF-8)</label><input id="f_encoding" type="text" placeholder="可选"></div>
+    <div class="field"><label>环境变量(每行 KEY=VAL)</label><textarea id="f_env" placeholder="RUST_LOG=debug&#10;TZ=Asia/Shanghai"></textarea></div>
+    <div class="chk">
+      <label><input id="f_autostart" type="checkbox"> 自动启动</label>
+      <label><input id="f_autorestart" type="checkbox"> 崩溃自动重启</label>
+    </div>
+    <div class="err" id="formErr"></div>
+    <div class="actions">
+      <button onclick="closeForm()">取消</button>
+      <button class="primary" onclick="submitForm()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
 <script>
 // ── 状态 ─────────────────────────────────────────────
 let token = localStorage.getItem('warden_token') || '';
@@ -135,8 +193,13 @@ function renderServices(list) {
     const row = document.createElement('div');
     row.className = 'svc' + (s.name === selected ? ' sel' : '');
     row.onclick = () => selectService(s.name);
+    // 状态点 + 健康点(●healthy 绿 / unhealthy 红 / unknown 灰)
     const dot = document.createElement('span');
     dot.className = 'dot ' + st;
+    const hd = document.createElement('span');
+    const hst = (s.health && s.health.status) || 'unknown';
+    hd.className = 'dot ' + (hst === 'healthy' ? 'running' : hst === 'unhealthy' ? 'failed' : 'stopped');
+    hd.title = '健康:' + hst;
     const name = document.createElement('span');
     name.className = 'svcname';
     name.textContent = s.display_name || s.name;
@@ -151,7 +214,15 @@ function renderServices(list) {
     b.textContent = isRun ? 'stop' : 'start';
     b.onclick = (ev) => { ev.stopPropagation(); startStop(s.name, isRun ? 'stop' : 'start'); };
     btns.appendChild(b);
-    row.append(dot, name, pid, btns);
+    const eb = document.createElement('button');
+    eb.textContent = '编辑';
+    eb.onclick = (ev) => { ev.stopPropagation(); openForm(s.name); };
+    btns.appendChild(eb);
+    const db = document.createElement('button');
+    db.textContent = '删';
+    db.onclick = (ev) => { ev.stopPropagation(); deleteService(s.name); };
+    btns.appendChild(db);
+    row.append(dot, hd, name, pid, btns);
     box.appendChild(row);
   }
 }
@@ -254,6 +325,96 @@ function saveToken() {
   // token 变化需重建流(切换 SSE/轮询)
   if (selected) selectService(selected);
   loadHealth(); loadServices();
+}
+
+// ── 新增/编辑服务表单 ────────────────────────────────
+let editingName = null; // null=新增;否则=编辑的服务名
+function openForm(name) {
+  editingName = name || null;
+  document.getElementById('formErr').textContent = '';
+  document.getElementById('formTitle').textContent = name ? '编辑服务:' + name : '新增服务';
+  // 清空默认
+  ['f_name','f_command','f_args','f_workdir','f_encoding','f_env'].forEach(id => {
+    document.getElementById(id).value = id === 'f_graceful' ? '10' : '';
+  });
+  document.getElementById('f_graceful').value = '10';
+  document.getElementById('f_autostart').checked = false;
+  document.getElementById('f_autorestart').checked = false;
+  if (name) {
+    // 编辑:拉完整配置预填
+    api('/api/v1/services/' + enc(name) + '/config').then(cfg => {
+      document.getElementById('f_name').value = cfg.name || '';
+      document.getElementById('f_name').disabled = true; // PUT 要求 body.name==路径名
+      document.getElementById('f_command').value = cfg.command || '';
+      document.getElementById('f_args').value = (cfg.args || []).join('\n');
+      document.getElementById('f_workdir').value = cfg.working_dir || '';
+      document.getElementById('f_graceful').value = cfg.graceful_timeout_secs ?? 10;
+      document.getElementById('f_encoding').value = cfg.output_encoding || '';
+      document.getElementById('f_env').value = Object.entries(cfg.environment || {}).map(([k,v]) => k + '=' + v).join('\n');
+      document.getElementById('f_autostart').checked = !!cfg.auto_start;
+      document.getElementById('f_autorestart').checked = !!cfg.auto_restart;
+    }).catch(e => showToast('加载配置失败:' + e.message, true));
+  } else {
+    document.getElementById('f_name').disabled = false;
+  }
+  document.getElementById('formOverlay').style.display = 'flex';
+}
+function closeForm() {
+  document.getElementById('formOverlay').style.display = 'none';
+}
+function submitForm() {
+  const name = document.getElementById('f_name').value.trim();
+  const command = document.getElementById('f_command').value.trim();
+  if (!name || !command) { document.getElementById('formErr').textContent = '名称和命令必填'; return; }
+  const cfg = {
+    name,
+    command,
+    args: document.getElementById('f_args').value.split('\n').map(s => s.trim()).filter(Boolean),
+    working_dir: document.getElementById('f_workdir').value.trim() || null,
+    graceful_timeout_secs: parseInt(document.getElementById('f_graceful').value) || 10,
+    output_encoding: document.getElementById('f_encoding').value.trim() || null,
+    auto_start: document.getElementById('f_autostart').checked,
+    auto_restart: document.getElementById('f_autorestart').checked,
+    environment: {},
+  };
+  // 环境变量 KEY=VAL 每行
+  for (const line of document.getElementById('f_env').value.split('\n')) {
+    const i = line.indexOf('=');
+    if (i > 0) cfg.environment[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  const method = editingName ? 'PUT' : 'POST';
+  const url = editingName ? '/api/v1/services/' + enc(editingName) : '/api/v1/services';
+  fetch(url, { method, headers: Object.assign({'Content-Type': 'application/json'}, authHeaders()), body: JSON.stringify(cfg) })
+    .then(async r => {
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((body && body.message) || ('HTTP ' + r.status));
+      closeForm();
+      showToast((editingName ? '已更新:' : '已创建:') + name);
+      loadServices();
+    })
+    .catch(e => { document.getElementById('formErr').textContent = '保存失败:' + e.message; });
+}
+function deleteService(name) {
+  if (!confirm('确认删除服务「' + name + '」?(运行中不可删)')) return;
+  fetch('/api/v1/services/' + enc(name), { method: 'DELETE', headers: authHeaders() })
+    .then(async r => {
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((body && body.message) || ('HTTP ' + r.status));
+      if (selected === name) { selected = null; closeStream(); document.getElementById('logtitle').textContent = '选择左侧服务查看日志'; }
+      showToast('已删除:' + name);
+      loadServices();
+    })
+    .catch(e => showToast('删除失败:' + e.message, true));
+}
+
+// ── toast ────────────────────────────────────────────
+let toastTimer = null;
+function showToast(text, isErr) {
+  const t = document.getElementById('toast');
+  t.textContent = text;
+  t.className = isErr ? 'show err' : 'show';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = ''; }, 3000);
 }
 function togglePause() {
   paused = !paused;

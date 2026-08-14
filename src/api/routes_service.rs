@@ -28,6 +28,15 @@ pub async fn get_one(
     Ok(Json(json!(s)))
 }
 
+/// 服务完整配置(编辑表单预填;list 只返回状态快照,不含 command/env 等)。
+pub async fn get_config(
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+) -> WResult<impl IntoResponse> {
+    let h = st.supervisor.handle(&name)?;
+    Ok(Json(h.config.clone()))
+}
+
 pub async fn start(
     State(st): State<AppState>,
     Path(name): Path<String>,

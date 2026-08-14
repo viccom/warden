@@ -122,6 +122,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/services/{name}", get(routes_service::get_one))
         .route("/api/v1/services/{name}", put(routes_service::update))
         .route("/api/v1/services/{name}", delete(routes_service::delete))
+        .route(
+            "/api/v1/services/{name}/config",
+            get(routes_service::get_config),
+        )
         .route("/api/v1/services/{name}/start", post(routes_service::start))
         .route("/api/v1/services/{name}/stop", post(routes_service::stop))
         .route(

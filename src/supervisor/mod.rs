@@ -74,6 +74,11 @@ impl Supervisor {
             .ok_or_else(|| WardenError::ServiceNotFound(name.into()))
     }
 
+    /// 公开访问句柄(API 读取完整配置等)。
+    pub fn handle(&self, name: &str) -> WResult<Arc<ProcHandle>> {
+        self.get(name)
+    }
+
     /// 启动指定服务(若已运行/启动中/重启中则返回 InvalidState)。
     pub async fn start(&self, name: &str) -> WResult<()> {
         let handle = self.get(name)?;

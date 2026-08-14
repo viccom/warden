@@ -84,6 +84,17 @@ async fn crud_create_update_delete_and_overlay_persist() {
     let r = hit(&state, "POST", "/api/v1/services", Some(dup)).await;
     assert_ne!(r.status(), 200, "重名应拒绝");
 
+    // config 端点:返回完整配置(编辑表单预填用)
+    let r = hit(&state, "GET", "/api/v1/services/runtime-svc/config", None).await;
+    assert_eq!(r.status(), 200, "config 端点应 200");
+    {
+        use axum::body::to_bytes;
+        let bytes = to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        let cfg: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(cfg["name"], "runtime-svc");
+        assert_eq!(cfg["command"], cmd, "config 应含完整 command");
+    }
+
     // create:坏 name(禁用字符)拒绝
     let bad = serde_json::json!({ "name": "a/b", "command": "x" });
     let r = hit(&state, "POST", "/api/v1/services", Some(bad)).await;
