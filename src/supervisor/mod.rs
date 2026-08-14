@@ -7,6 +7,7 @@
 
 pub mod metrics;
 pub mod proc;
+pub mod signal;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -222,6 +223,8 @@ pub(crate) struct ProcInner {
     pub metrics: ProcMetrics,
     pub cancel: Option<CancellationToken>,
     pub task: Option<tokio::task::JoinHandle<()>>,
+    /// 进程树追踪(Windows Job Object / Unix 进程组):stop 时强杀 + 崩溃保护。
+    pub job: Option<crate::supervisor::signal::JobTree>,
 }
 
 impl ProcHandle {
@@ -236,6 +239,7 @@ impl ProcHandle {
                 metrics: ProcMetrics::default(),
                 cancel: None,
                 task: None,
+                job: None,
             }),
         }
     }

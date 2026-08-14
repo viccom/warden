@@ -32,6 +32,7 @@ fn make_config(name: &str, cmd: &str, args: Vec<String>, auto_restart: bool, max
         },
         health: None,
         ui_url: None,
+        graceful_timeout_secs: 1,
     }
 }
 

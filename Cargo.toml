@@ -16,6 +16,11 @@ path = "src/lib.rs"
 name = "warden"
 path = "src/main.rs"
 
+# 测试辅助二进制(被 warden 作为被监护进程启动,验证优雅停止信号链路)
+[[bin]]
+name = "graceful_target"
+path = "tests/helpers/graceful_target.rs"
+
 [dependencies]
 # 与 rs-iot 同版本栈,便于统一维护
 tokio = { version = "1", features = ["full"] }
@@ -43,6 +48,18 @@ directories = "5"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_System_Console",
+    "Win32_Foundation",
+    "Win32_Security",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.release]
 opt-level = 3

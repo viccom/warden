@@ -72,8 +72,8 @@
 ## Phase 4 —— 增强
 
 - [ ] TCP/HTTP 健康检查完整实现 + 告警(webhook / 日志)
-- [ ] **优雅停止(Phase 1 实测:对 rs-iot 是数据安全关键,非可选)**:当前 `stop` 用 TerminateProcess **强杀**,被监护服务无 graceful 机会。rs-iot 强杀会**跳过 lux SAVE**(丢最后一个 `save_interval` 的数据 + WAL 不截断)——这是数据风险。需 Linux SIGTERM→SIGKILL / Windows GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT)给服务 graceful 机会 + 超时后强杀。**优先级因此提升**。
-- [ ] **杀进程树(Phase 1 实测)**:`stop` 的 TerminateProcess 只杀直接子进程。npm 版 reasonix(`cmd /c reasonix → node`)实测会留 3 个 node.exe 孤儿。**已通过配置规避**:reasonix 改用官方 Go 单二进制(直接进程,stop 干净,实测 :8787 立即 000 无残留)。Windows Job Object(KILL_ON_JOB_CLOSE)仍作为通用兜底,应对未来其他 cmd/sh 包装的服务。
+- [x] **优雅停止 ✅(2026-08-14 完成)**:`stop` 改为发信号 → `graceful_timeout` → 超时强杀。Windows 发 `CTRL_BREAK_EVENT`(独立 process group 精确投递;CTRL_C 不跨 group 是 Windows quirk)。**配套 rs-iot 已加 CTRL_BREAK 监听**(src/lib.rs `shutdown_signal`),实测 `warden stop rs-iot` → 日志 `lux SAVE ok` → 数据安全达成。Linux 走 SIGTERM。
+- [x] **杀进程树 ✅(2026-08-14 完成)**:每个子进程一个 Job Object(`KILL_ON_JOB_CLOSE`),stop 时 `TerminateJobObject` 杀整棵树 + warden 崩溃时子进程树全死(无孤儿)。helper e2e 验证(stubborn + child → force_kill 杀树)。
 - [ ] 运行时配置 CRUD(POST/PUT/DELETE `/services`,免改文件)
 - [ ] Web 前端(复用已就绪 API,rust-embed 嵌入,参考 rs-iot gateway)
 - [ ] desired-state 持久化(daemon 重启后恢复期望状态)
@@ -88,3 +88,4 @@
 - **2026-08-14(完)**:**Phase 1 全部完成**。第 6-10 步(metrics / api+鉴权+SSE / run_app+tracing+graceful / example 验证 / clippy clean)。累计 31 测试全绿,冒烟测试验证 warden run 全链路可用。下一步 Phase 2。
 - **2026-08-14(真实验证)**:用真实 rs-iot 三件套验证 Phase 1。✅ 三件套全部拉起/监护/日志捕获/metrics/直接 exe 干净 stop 全工作。⚠️ 实测确认两个 Phase 4 关键项并**调整优先级**:① reasonix(cmd→node)stop 后 node 孤儿(:8787 仍 200);② **stop 强杀使 rs-iot 跳过 lux SAVE(数据风险)→ 优雅停止对 rs-iot 是数据安全关键,优先级提升到 Phase 2 之前考虑**。
 - **2026-08-14(reasonix Go 二进制)**:reasonix 改用官方 Go 单二进制(`E:\rsiot-field\bin\reasonix.exe` v1.25.1),`services.example.toml` 去掉 `cmd /c` 包装。实测 stop reasonix 后 :8787 立即 000、无 node/reasonix 残留——**孤儿问题在配置层面解决**(不依赖 Phase 4 Job Object)。CLI 用单横杠参数 `-addr`/`-auth`/`-token`。
+- **2026-08-14(优雅停止 + 杀进程树 ✅)**:原 Phase 4 两项提前完成。warden:`CTRL_BREAK` 信号(独立 group 精确投递)+ `graceful_timeout` + Job Object(`KILL_ON_JOB_CLOSE` 杀树/崩溃保护),34 测试 + clippy clean,helper e2e 验证 graceful/强杀/杀树。**发现并记录 Windows 限制**:`CTRL_C_EVENT` 对独立 process group 不投递(quirk),只有 `CTRL_BREAK_EVENT` 跨 group;tokio `ctrl_c()` 不响应 CTRL_BREAK。**配套 rs-iot 改动**:src/lib.rs 加 `shutdown_signal`(SetConsoleCtrlHandler 监听 CTRL_C+CTRL_BREAK),实测 `warden stop rs-iot` → `lux SAVE ok`(数据安全达成)。

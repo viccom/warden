@@ -43,6 +43,13 @@ pub struct ServiceConfig {
     /// 可在 TUI/Web 打开的管理 URL。
     #[serde(default)]
     pub ui_url: Option<String>,
+    /// 优雅停止等待秒数:发信号后给目标 graceful 的时限,超时则强杀整棵进程树。
+    #[serde(default = "default_graceful_timeout_secs")]
+    pub graceful_timeout_secs: u64,
+}
+
+fn default_graceful_timeout_secs() -> u64 {
+    10
 }
 
 /// 崩溃重启的退避策略。

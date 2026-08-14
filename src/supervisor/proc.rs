@@ -34,6 +34,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
             }
         };
         let pid = child.id();
+        let pgid = pid.unwrap_or(0);
 
         // 接管输出:两个 reader task 把 stdout/stderr 按行推入 LogHub
         if let Some(out) = child.stdout.take() {
@@ -43,6 +44,25 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
         if let Some(err) = child.stderr.take() {
             let log = Arc::clone(&handle.log);
             tokio::spawn(pipe_reader(err, log, LogStream::Stderr));
+        }
+
+        // 进程树追踪:创建 Job Object / 进程组,assign 子进程,存入 ProcInner
+        //   stop 时强杀整棵树(含孤儿)+ warden 崩溃时 KILL_ON_JOB_CLOSE 保护。
+        //   存 Mutex<ProcInner> 而非 loop 局部,避免 &JobGuard 跨 await 导致 future !Send。
+        {
+            let job = match super::signal::create_job_tree() {
+                Ok(j) => {
+                    if let Err(e) = super::signal::assign_to_job(&j, &child) {
+                        tracing::warn!("[supervisor] assign job 失败({}):{e}", handle.config.name);
+                    }
+                    Some(j)
+                }
+                Err(e) => {
+                    tracing::warn!("[supervisor] create job 失败({}):{e}", handle.config.name);
+                    None
+                }
+            };
+            handle.inner.lock().unwrap().job = job;
         }
 
         // 设 Running,并在 restart_window 外重置计数(稳定运行后重新给机会)
@@ -57,7 +77,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
             }
             g.last_started_at = Some(now);
             g.state = ProcState::Running {
-                pid: pid.unwrap_or(0),
+                pid: pgid,
                 started_at: now,
             };
         }
@@ -72,8 +92,32 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
                 Err(_) => None,
             },
             _ = cancel.cancelled() => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
+                // 优雅停止:发信号 → 等 graceful_timeout → 超时强杀整棵树
+                {
+                    let mut g = handle.inner.lock().unwrap();
+                    g.state = ProcState::Stopping;
+                }
+                handle.log.push(LogStream::Stdout, "[warden] 发送优雅停止信号");
+                if let Err(e) = super::signal::send_graceful(pgid) {
+                    tracing::warn!("[supervisor] 发送 graceful 信号失败({}):{e}", handle.config.name);
+                }
+                let timeout = std::time::Duration::from_secs(handle.config.graceful_timeout_secs);
+                match tokio::time::timeout(timeout, child.wait()).await {
+                    Ok(_) => {
+                        handle.log.push(LogStream::Stdout, "[warden] 优雅停止完成");
+                    }
+                    Err(_) => {
+                        handle.log.push(LogStream::Stderr, "[warden] 优雅停止超时,强杀进程树");
+                        {
+                            let g = handle.inner.lock().unwrap();
+                            if let Some(j) = &g.job {
+                                super::signal::force_kill_tree(j, pgid);
+                            }
+                        }
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                    }
+                }
                 let mut g = handle.inner.lock().unwrap();
                 g.state = ProcState::Stopped;
                 handle.log.push(LogStream::Stdout, "[warden] 已停止");
@@ -151,6 +195,7 @@ fn spawn_child(config: &crate::model::ServiceConfig) -> std::io::Result<tokio::p
         cmd.env(k, v);
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    super::signal::prepare_command(&mut cmd);
     cmd.spawn()
 }
 
