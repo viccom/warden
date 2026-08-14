@@ -54,11 +54,14 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
         }
     };
 
+    // 注意:正常路径一律用 ServiceExitCode::NO_ERROR——ServiceSpecific(n) 会把
+    // dwWin32ExitCode 置为 ERROR_SERVICE_SPECIFIC_ERROR(1066),SCM 的 WIN32_EXIT_CODE
+    // 就显示 1066(此前所有状态都用 ServiceSpecific(0),导致停止后恒显 1066)。
     report(
         &status_handle,
         ServiceState::StartPending,
         ServiceControlAccept::empty(),
-        ServiceExitCode::ServiceSpecific(0),
+        ServiceExitCode::NO_ERROR,
         1,
         Duration::from_secs(10),
     );
@@ -99,7 +102,11 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
             }
         };
         let ok = rt
-            .block_on(crate::run_app_with_shutdown(cfg, config_path, shutdown_clone))
+            .block_on(crate::run_app_with_shutdown(
+                cfg,
+                config_path,
+                shutdown_clone,
+            ))
             .is_ok();
         let _ = done_tx.send(ok);
     });
@@ -108,7 +115,7 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
         &status_handle,
         ServiceState::Running,
         ServiceControlAccept::STOP,
-        ServiceExitCode::ServiceSpecific(0),
+        ServiceExitCode::NO_ERROR,
         0,
         Duration::default(),
     );
@@ -120,7 +127,7 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
         &status_handle,
         ServiceState::StopPending,
         ServiceControlAccept::empty(),
-        ServiceExitCode::ServiceSpecific(0),
+        ServiceExitCode::NO_ERROR,
         1,
         Duration::from_secs(30),
     );
@@ -133,12 +140,13 @@ fn service_main(_arguments: Vec<std::ffi::OsString>) {
         &status_handle,
         ServiceState::Stopped,
         ServiceControlAccept::empty(),
-        ServiceExitCode::ServiceSpecific(0),
+        ServiceExitCode::NO_ERROR,
         0,
         Duration::default(),
     );
-
-    std::process::exit(0);
+    // 直接返回:dispatcher 标准收尾 → dispatch() 返回 → main 返回 → 进程以退出码 0
+    // 正常退出(不用 exit(0),它绕过 dispatcher 收尾)。worker 线程(done 已收到)
+    // 随进程退出被终止,无泄漏。
 }
 
 fn report(
@@ -163,8 +171,70 @@ fn report(
     }
 }
 
-/// install:sc.exe create binPath="<exe> service" start=auto(需管理员)。
+/// 当前进程是否已提权(管理员 token)。提权检测失败按非管理员处理(保守)。
+fn is_elevated() -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token: *mut core::ffi::c_void = std::ptr::null_mut();
+    unsafe {
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut elev: TOKEN_ELEVATION = std::mem::zeroed();
+        let mut len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            &mut elev as *mut _ as *mut _,
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut len,
+        );
+        CloseHandle(token);
+        ok != 0 && elev.TokenIsElevated != 0
+    }
+}
+
+/// 以管理员身份重新运行自己(`ShellExecuteW "runas"`,弹出 UAC 确认)。
+/// 返回后调用方应退出:真正的 install/uninstall 由提权后的新进程执行。
+fn relaunch_elevated(cmd: &str) -> anyhow::Result<()> {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+
+    let exe = std::env::current_exe()?;
+    let exe_w: Vec<u16> = exe
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let op_w: Vec<u16> = "runas".encode_utf16().chain(Some(0)).collect();
+    let cmd_w: Vec<u16> = cmd.encode_utf16().chain(Some(0)).collect();
+    // nShowCmd=1(SW_SHOWNORMAL):提权的新进程显示控制台,用户能看到结果
+    let res = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op_w.as_ptr(),
+            exe_w.as_ptr(),
+            cmd_w.as_ptr(),
+            std::ptr::null_mut(),
+            1,
+        )
+    };
+    if res as isize <= 32 {
+        anyhow::bail!("UAC 提权启动失败({res:?}),请手动以管理员身份运行");
+    }
+    println!("需要管理员权限,已请求 UAC 提权,请在弹出的窗口中确认...");
+    Ok(())
+}
+
+/// install:sc.exe create binPath="<exe> service" start=auto。非管理员自动 UAC 提权。
 pub fn install(exe: &std::path::Path) -> anyhow::Result<()> {
+    if !is_elevated() {
+        relaunch_elevated("install")?;
+        return Ok(()); // 提权的新进程执行 install,本进程退出
+    }
     let binpath = format!("\"{}\" service", exe.display());
     let status = std::process::Command::new("sc")
         .args([
@@ -182,16 +252,22 @@ pub fn install(exe: &std::path::Path) -> anyhow::Result<()> {
         anyhow::bail!("sc create 失败(需管理员权限运行)");
     }
     let _ = std::process::Command::new("sc")
-        .args(["description", SERVICE_NAME, "warden process supervisor daemon"])
+        .args([
+            "description",
+            SERVICE_NAME,
+            "warden process supervisor daemon",
+        ])
         .status();
-    println!(
-        "已安装服务 {SERVICE_NAME}。启动:sc start {SERVICE_NAME};停止:sc stop {SERVICE_NAME}"
-    );
+    println!("已安装服务 {SERVICE_NAME}。启动:sc start {SERVICE_NAME};停止:sc stop {SERVICE_NAME}");
     Ok(())
 }
 
-/// uninstall:sc.exe stop + delete。
+/// uninstall:sc.exe stop + delete。非管理员自动 UAC 提权。
 pub fn uninstall() -> anyhow::Result<()> {
+    if !is_elevated() {
+        relaunch_elevated("uninstall")?;
+        return Ok(()); // 提权的新进程执行 uninstall,本进程退出
+    }
     let _ = std::process::Command::new("sc")
         .args(["stop", SERVICE_NAME])
         .status();

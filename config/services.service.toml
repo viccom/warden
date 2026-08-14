@@ -1,0 +1,26 @@
+# warden Windows Service 模式测试配置
+#
+# 用法:
+#   1. 管理员 PowerShell: 复制本文件到 <exe_dir>/config/services.toml
+#      (Service 模式 cwd=System32,靠 exe_dir 定位配置,文件名必须 services.toml)
+#   2. warden install && sc start warden
+#   3. 验证 + 停止:sc stop warden,然后 warden uninstall
+#
+# 注意:Service 模式所有路径必须绝对(会话 0 cwd=System32,相对路径会写进 System32)。
+
+[daemon]
+api_bind   = "127.0.0.1:8791"   # Service 模式 daemon 仍监听本地 HTTP API
+auth_token = ""
+data_dir   = "E:/github.com/warden/data"   # 绝对路径
+log_dir    = "E:/github.com/warden/logs"   # 绝对路径
+
+[[service]]
+name = "gbk-decoded"
+display_name = "GBK 解码(Service 模式)"
+description  = "gbk_target 输出 GBK 中文,验证 output_encoding"
+command      = "E:/github.com/warden/target/debug/gbk_target.exe"  # 绝对路径
+working_dir  = "E:/github.com/warden"
+auto_start   = true
+auto_restart = false
+output_encoding = "gbk"
+graceful_timeout_secs = 2
