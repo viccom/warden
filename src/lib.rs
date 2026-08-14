@@ -13,13 +13,14 @@ pub mod config;
 pub mod error;
 pub mod logs;
 pub mod model;
+pub mod service;
 pub mod supervisor;
 
 pub use error::{WardenError, WResult};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// 前台运行 daemon:加载配置 → tracing → 启动 auto_start → metrics 采样 → HTTP API → graceful shutdown。
+/// 前台运行 daemon(CLI `run`):加载配置 + Ctrl-C 触发 shutdown,委托 `run_app_with_shutdown`。
 pub async fn run_app(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     let cfg = match config::Config::load(config_path.as_deref()) {
         Ok(c) => c,
@@ -31,37 +32,49 @@ pub async fn run_app(config_path: Option<PathBuf>) -> anyhow::Result<()> {
             return Ok(());
         }
     };
+    let shutdown = CancellationToken::new();
+    let shutdown_tx = shutdown.clone();
+    // 前台:Ctrl-C(SIGINT)触发 graceful
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("[warden] Ctrl-C 收到,触发 shutdown");
+        shutdown_tx.cancel();
+    });
+    run_app_with_shutdown(cfg, config_path, shutdown).await
+}
+
+/// 核心:由外部传入 shutdown token(前台=Ctrl-C,Service=SCM Stop)。
+/// init tracing → build state → start_auto → metrics → axum serve(graceful)→ stop_all。
+pub async fn run_app_with_shutdown(
+    cfg: config::Config,
+    config_path: Option<PathBuf>,
+    shutdown: CancellationToken,
+) -> anyhow::Result<()> {
     let bind = cfg.daemon.api_bind.clone();
     let _log_guard = init_tracing(&cfg.daemon.log_dir);
-
     tracing::info!(
         "[warden] {VERSION} 启动,配置 {} 个服务,api_bind={bind}",
         cfg.services.len()
     );
 
     let state = api::build_state(cfg, config_path);
-    // 拉起 auto_start 服务
     state.supervisor.start_auto().await;
-    // 后台 metrics 采样
     state.supervisor.clone().spawn_metrics(Duration::from_secs(2));
 
     let supervisor = state.supervisor.clone();
     let app = api::build_router(state);
-
     let listener = TcpListener::bind(&bind)
         .await
         .map_err(|e| anyhow::anyhow!("bind {bind} 失败:{e}"))?;
-    tracing::info!("[warden] HTTP API listening on {bind}(Ctrl-C 退出)");
+    tracing::info!("[warden] HTTP API listening on {bind}");
 
-    // Ctrl-C → 停所有服务 → 触发 axum graceful shutdown
-    let shutdown = CancellationToken::new();
-    let shutdown_tx = shutdown.clone();
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            tracing::info!("[warden] 收到 Ctrl-C,停止所有服务...");
-            supervisor.stop_all().await;
-            shutdown_tx.cancel();
-        }
+    // shutdown 触发时停所有被监护服务(graceful),与 axum graceful 并行
+    let stop_sup = supervisor.clone();
+    let stop_shutdown = shutdown.clone();
+    let stop_task = tokio::spawn(async move {
+        stop_shutdown.cancelled().await;
+        tracing::info!("[warden] shutdown 信号,停止所有被监护服务...");
+        stop_sup.stop_all().await;
     });
 
     axum::serve(listener, app)
@@ -69,12 +82,14 @@ pub async fn run_app(config_path: Option<PathBuf>) -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("axum serve error: {e}"))?;
 
+    // 等 stop_all 完成(子进程 graceful 收尾),再退出
+    let _ = stop_task.await;
     tracing::info!("[warden] 已退出");
     Ok(())
 }
 
 /// 初始化 tracing:控制台层 + 可选按日轮转文件层。
-/// 返回的 guard 须由调用方持有到程序结束(否则丢末尾日志)。
+/// 返回的 guard 须由调用方持有到程序结束(Service 模式在 exit(0) 前显式 drop)。
 fn init_tracing(log_dir: &str) -> Option<tracing_appender::non_blocking::WorkerGuard> {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;

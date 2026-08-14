@@ -43,15 +43,16 @@
 
 ## Phase 2 —— daemon 自注册 OS 服务(后台常驻 + 开机自启)
 
-> 参考 serviceMgr-tui 的 OS 服务注册能力,反向用于注册 daemon 自身。设计待细化。
+> 参考 rs-iot `src/service/`(windows-service crate 范式)。核心已完成 ✅。
 
-- [ ] `windows-service` crate 调 SCM:`install` / `uninstall` / `service` 子命令
-- [ ] daemon 作为 Windows Service 启动(进 SCM 事件循环,on Start 跑监护主逻辑,on Stop 触发 CancellationToken)
-- [ ] UAC 提权(`ShellExecuteW "runas"`,检测 Administrators 组)
-- [ ] Windows 下被监护控制台进程的 `CREATE_NO_WINDOW` 处理(避免服务会话弹窗/失败)
-- [ ] GBK/CP936 → UTF-8 解码被监护进程输出(`encoding_rs`)
-- [ ] Linux systemd unit 模板 + `systemctl enable/start`;macOS launchd plist(次要)
-- [ ] SCM/Win32 错误码翻译(对齐 serviceMgr-tui `manager_common.go`)
+- [x] **install / uninstall / service 子命令 ✅(2026-08-14)**:`sc.exe create/delete`(binPath=`<warden> service` start=auto)+ `define_windows_service!` + `service_dispatcher` + `service_control_handler`。实测 install/uninstall 通过。
+- [x] **daemon 作为 Windows Service ✅**:service_main(SCM Stop → mpsc → StopPending 30s → shutdown.cancel → worker 线程 run_app_with_shutdown → Stopped → exit 0)。`run`(前台 ctrl_c)与 Service(SCM Stop)共享 `run_app_with_shutdown`。
+- [x] **会话 0 console graceful(AllocConsole)✅**:Service 模式(会话 0 默认无 console)启动时 `AllocConsole` 创建不可见 console → 子进程继承 → CTRL_BREAK 链路保持。**实测 `sc stop warden` → rs-iot `lux SAVE ok`**(会话 0 graceful 达成,Phase 1 优雅停止在 Service 模式仍有效)。
+- [ ] UAC 自提权(`ShellExecuteW "runas"`)——当前 install 提示需管理员手动运行
+- [ ] CREATE_NO_WINDOW(子进程在服务会话不弹窗——rs-iot/reasonix 控制台程序)
+- [ ] GBK/CP936 → UTF-8 解码被监护进程输出
+- [ ] Linux systemd unit + systemctl enable(框架已写 `systemd.rs`,未实测)
+- [ ] SCM/Win32 错误码翻译 + 1066 退出码治理(照 rs-iot,数据优先;SAVE 已执行)
 
 ---
 
@@ -89,3 +90,4 @@
 - **2026-08-14(真实验证)**:用真实 rs-iot 三件套验证 Phase 1。✅ 三件套全部拉起/监护/日志捕获/metrics/直接 exe 干净 stop 全工作。⚠️ 实测确认两个 Phase 4 关键项并**调整优先级**:① reasonix(cmd→node)stop 后 node 孤儿(:8787 仍 200);② **stop 强杀使 rs-iot 跳过 lux SAVE(数据风险)→ 优雅停止对 rs-iot 是数据安全关键,优先级提升到 Phase 2 之前考虑**。
 - **2026-08-14(reasonix Go 二进制)**:reasonix 改用官方 Go 单二进制(`E:\rsiot-field\bin\reasonix.exe` v1.25.1),`services.example.toml` 去掉 `cmd /c` 包装。实测 stop reasonix 后 :8787 立即 000、无 node/reasonix 残留——**孤儿问题在配置层面解决**(不依赖 Phase 4 Job Object)。CLI 用单横杠参数 `-addr`/`-auth`/`-token`。
 - **2026-08-14(优雅停止 + 杀进程树 ✅)**:原 Phase 4 两项提前完成。warden:`CTRL_BREAK` 信号(独立 group 精确投递)+ `graceful_timeout` + Job Object(`KILL_ON_JOB_CLOSE` 杀树/崩溃保护),34 测试 + clippy clean,helper e2e 验证 graceful/强杀/杀树。**发现并记录 Windows 限制**:`CTRL_C_EVENT` 对独立 process group 不投递(quirk),只有 `CTRL_BREAK_EVENT` 跨 group;tokio `ctrl_c()` 不响应 CTRL_BREAK。**配套 rs-iot 改动**:src/lib.rs 加 `shutdown_signal`(SetConsoleCtrlHandler 监听 CTRL_C+CTRL_BREAK),实测 `warden stop rs-iot` → `lux SAVE ok`(数据安全达成)。
+- **2026-08-14(Phase 2 核心 ✅)**:warden 自注册 Windows Service。install/uninstall(sc.exe)+ service 子命令(define_windows_service + service_dispatcher + service_control_handler)+ service_main(SCM Stop → graceful)+ `run_app_with_shutdown` 共享(前台/Service)。**核心挑战解决**:Service 模式(会话 0)AllocConsole → 子进程继承 console → CTRL_BREAK 仍触发 rs-iot SAVE(实测 `sc stop warden` → `lux SAVE ok`)。clippy clean。剩余:UAC 自提权、CREATE_NO_WINDOW、GBK、systemd 实测、1066 治理。

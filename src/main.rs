@@ -42,9 +42,25 @@ async fn main() -> anyhow::Result<()> {
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => warden::run_app(cli.config).await,
         Command::Tui => bail_unimplemented("tui", "Phase 3"),
-        Command::Install => bail_unimplemented("install", "Phase 2"),
-        Command::Uninstall => bail_unimplemented("uninstall", "Phase 2"),
-        Command::Service => bail_unimplemented("service", "Phase 2"),
+        Command::Install => {
+            warden::service::install()?;
+            Ok(())
+        }
+        Command::Uninstall => {
+            warden::service::uninstall()?;
+            Ok(())
+        }
+        Command::Service => {
+            #[cfg(windows)]
+            {
+                warden::service::windows::dispatch()?;
+            }
+            #[cfg(not(windows))]
+            {
+                anyhow::bail!("`warden service` 仅 Windows 支持");
+            }
+            Ok(())
+        }
     }
 }
 
