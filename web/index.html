@@ -89,6 +89,12 @@
             border-bottom: 1px solid var(--border); }
   .logbar #logtitle { font-size: 16px; font-weight: 600; }
   .logbar .hint { color: var(--muted); font-size: 12.5px; }
+  .logbar input[type=text] { background: var(--bg); border: 1px solid var(--border); color: var(--text);
+                             padding: 5px 10px; border-radius: 6px; font-family: inherit; font-size: 13px;
+                             width: 150px; outline: none; }
+  .logbar input[type=text]:focus { border-color: var(--blue-dim); }
+  .logbar .lblchk { color: var(--sub); font-size: 13px; display: flex; align-items: center; gap: 4px; }
+  .logbar .lblchk input { accent-color: var(--blue); }
   #logs { flex: 1; overflow-y: auto; padding: 12px 18px; font-size: 13.5px; line-height: 1.7;
           font-family: ui-monospace, "Cascadia Code", Consolas, "Courier New", monospace; }
   .line { display: flex; gap: 10px; white-space: pre-wrap; word-break: break-all; }
@@ -152,6 +158,8 @@
       <span id="logtitle">选择左侧服务查看日志</span>
       <span class="hint" id="loghint"></span>
       <span class="grow"></span>
+      <input id="logFilter" type="text" placeholder="过滤日志…" oninput="onLogFilter()">
+      <label class="lblchk"><input type="checkbox" id="errOnly" onchange="onLogFilter()"> 仅错误</label>
       <button class="btn sm" id="pauseBtn" onclick="togglePause()">⏸ 暂停</button>
       <button class="btn sm" onclick="clearLog()">清空</button>
     </div>
@@ -299,13 +307,17 @@ function selectService(name) {
   lastTs = '';
   closeStream();
   document.getElementById('logtitle').textContent = name;
-  document.getElementById('loghint').textContent = '';
+  // 切换服务:重置日志过滤
+  document.getElementById('logFilter').value = '';
+  document.getElementById('errOnly').checked = false;
+  logFilter = ''; logErrOnly = false;
   clearLog(true);
   // 先拉历史快照
   api('/api/v1/services/' + enc(name) + '/logs?tail=200').then(d => {
     for (const l of d.lines) appendLog(l);
     if (d.lines.length) lastTs = d.lines[d.lines.length - 1].ts;
-    capLogs(); scrollBottom();
+    updateLogHint(document.getElementById('logs').childNodes.length);
+    scrollBottom();
   }).catch(() => {});
   openStream(name);
   renderServices(currentList);
@@ -321,7 +333,7 @@ function openStream(name) {
     es.addEventListener('log', ev => {
       try {
         const line = JSON.parse(ev.data);
-        appendLog(line); capLogs();
+        appendLog(line);
         if (!paused) scrollBottom();
       } catch (_) {}
     });
@@ -337,7 +349,7 @@ async function pollLogs() {
       if (!lastTs || l.ts > lastTs) { appendLog(l); added = true; }
     }
     if (d.lines.length) lastTs = d.lines[d.lines.length - 1].ts;
-    if (added) { capLogs(); if (!paused) scrollBottom(); }
+    if (added && !paused) scrollBottom();
   } catch (_) {}
 }
 function closeStream() {
@@ -345,12 +357,22 @@ function closeStream() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 }
 
-// ── 日志渲染(textContent 防 XSS)─────────────────────
-function appendLog(line) {
-  const box = document.getElementById('logs');
-  if (box.firstChild && box.firstChild.classList && box.firstChild.classList.contains('empty')) {
-    box.innerHTML = '';
-  }
+// ── 日志渲染(缓冲 + 过滤 + 增量 DOM,textContent 防 XSS)────────
+// 高频日志性能:行先进 JS 缓冲(上限 2000),过滤时不匹配的行不建 DOM 节点
+// (缓冲保留,清过滤即恢复);DOM 上限 1500 行,超出批量删首行。无需虚拟滚动/
+// Canvas——本地监护每秒几十行场景增量 DOM 足够;若未来达每秒千行再升级虚拟滚动。
+let logBuf = [];       // 全量缓冲(上限 LOG_BUF_MAX)
+let logFilter = '';    // 关键词(大小写不敏感)
+let logErrOnly = false;
+const LOG_BUF_MAX = 2000;
+const LOG_DOM_MAX = 1500;
+
+function matchLog(line) {
+  if (logErrOnly && line.stream !== 'stderr') return false;
+  if (logFilter && !line.text.toLowerCase().includes(logFilter)) return false;
+  return true;
+}
+function appendLogDom(box, line) {
   const div = document.createElement('div');
   div.className = 'line ' + (line.stream === 'stderr' ? 'err' : 'out');
   const ts = document.createElement('span');
@@ -362,17 +384,59 @@ function appendLog(line) {
   div.append(ts, txt);
   box.appendChild(div);
 }
-function capLogs() {
+function updateLogHint(shown) {
+  const h = document.getElementById('loghint');
+  const total = logBuf.length;
+  if (logFilter || logErrOnly) {
+    h.textContent = '显示 ' + shown + '/' + total + ' 行' + (logFilter ? ' · 匹配 "' + logFilter + '"' : '') + (logErrOnly ? ' · 仅错误' : '');
+  } else {
+    h.textContent = '';
+  }
+}
+function appendLog(line) {
+  logBuf.push(line);
+  if (logBuf.length > LOG_BUF_MAX) {
+    logBuf.shift();
+    // 仅无过滤时 DOM 与缓冲一一对应,同步删首行(过滤模式由 rebuildLogs 全量重建)
+    if (!logFilter && !logErrOnly) {
+      const box = document.getElementById('logs');
+      if (box.firstChild && !box.firstChild.classList.contains('empty')) box.removeChild(box.firstChild);
+    }
+  }
+  if (!matchLog(line)) return; // 过滤不匹配:不入 DOM
   const box = document.getElementById('logs');
-  while (box.childNodes.length > 1000) box.removeChild(box.firstChild);
+  if (box.firstChild && box.firstChild.classList.contains('empty')) box.innerHTML = '';
+  appendLogDom(box, line);
+  while (box.childNodes.length > LOG_DOM_MAX) box.removeChild(box.firstChild);
+  updateLogHint(box.childNodes.length);
+  if (!paused) scrollBottom();
+}
+// 过滤条件变化:全量重建可见区(保留滚动位置;原在底部则保持底部)
+function rebuildLogs() {
+  const box = document.getElementById('logs');
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.innerHTML = '';
+  let shown = 0;
+  for (const l of logBuf) {
+    if (matchLog(l)) { appendLogDom(box, l); shown++; }
+  }
+  updateLogHint(shown);
+  box.scrollTop = atBottom ? box.scrollHeight : 0;
+}
+function onLogFilter() {
+  logFilter = document.getElementById('logFilter').value.trim().toLowerCase();
+  logErrOnly = document.getElementById('errOnly').checked;
+  rebuildLogs();
 }
 function scrollBottom() {
   const box = document.getElementById('logs');
   box.scrollTop = box.scrollHeight;
 }
 function clearLog(keepPlaceholder) {
+  logBuf = [];
   const box = document.getElementById('logs');
   box.innerHTML = keepPlaceholder ? '<div class="empty">加载日志中…</div>' : '';
+  updateLogHint(0);
 }
 
 // ── 操作:start / stop ───────────────────────────────
