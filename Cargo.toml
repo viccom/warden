@@ -27,6 +27,11 @@ path = "tests/helpers/graceful_target.rs"
 name = "gbk_target"
 path = "tests/helpers/gbk_target.rs"
 
+# 诊断二进制:打印 crossterm 读到的按键事件(定位 TUI 方向键无响应)
+[[bin]]
+name = "keys_probe"
+path = "tests/helpers/keys_probe.rs"
+
 [dependencies]
 # 与 rs-iot 同版本栈,便于统一维护
 tokio = { version = "1", features = ["full"] }
@@ -53,6 +58,11 @@ sysinfo = "0.32"
 directories = "5"
 # 子进程输出编码解码(GBK/CP936 等中文编码),Phase 2
 encoding_rs = "0.8"
+# TUI 客户端(Phase 3):ratatui 0.30 + crossterm 0.28 + reqwest(API/SSE)
+ratatui = "0.30"
+crossterm = { version = "0.28", features = ["events"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest-eventsource = "0.6"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

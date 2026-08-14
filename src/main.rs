@@ -26,8 +26,15 @@ struct Cli {
 enum Command {
     /// 前台运行 daemon(监护引擎 + HTTP API)。Phase 1 主入口。
     Run,
-    /// 启动 TUI 客户端(连 HTTP API)。— Phase 3 实现。
-    Tui,
+    /// 启动 TUI 终端客户端(连 HTTP API,服务表格 + 实时日志)。
+    Tui {
+        /// daemon HTTP API 地址(默认本机 8789)。
+        #[arg(long, default_value = "http://127.0.0.1:8789")]
+        url: String,
+        /// 鉴权 token(与 daemon.auth_token 对应;daemon 未配置则省略)。
+        #[arg(long)]
+        token: Option<String>,
+    },
     /// 把 warden 自身注册成 OS 服务(开机自启)。— Phase 2 实现。
     Install,
     /// 卸载 OS 服务注册。— Phase 2 实现。
@@ -41,7 +48,10 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => warden::run_app(cli.config).await,
-        Command::Tui => bail_unimplemented("tui", "Phase 3"),
+        Command::Tui { url, token } => {
+            let client = warden::tui::api::ApiClient::new(url.clone(), token)?;
+            warden::tui::run(client, url).await
+        }
         Command::Install => {
             warden::service::install()?;
             Ok(())
@@ -62,9 +72,4 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
     }
-}
-
-/// Phase 1 尚未实现的子命令统一返回友好提示。
-fn bail_unimplemented(cmd: &str, phase: &str) -> anyhow::Result<()> {
-    anyhow::bail!("`warden {cmd}` 将在 {phase} 实现,当前仅完成 Phase 1(见 docs/ROADMAP.md)")
 }

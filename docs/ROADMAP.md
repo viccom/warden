@@ -61,13 +61,10 @@
 
 > 连本地或远程 HTTP API 的终端客户端。设计待细化。
 
-- [ ] `warden tui` 子命令,reqwest 连 API
-- [ ] 服务表格(名称 / 状态 / PID / CPU% / 内存 / 重启次数)+ 虚拟滚动
-- [ ] 选中服务详情面板(配置、最近退出、健康状态)
-- [ ] 实时日志面板(SSE 订阅 + 滚动 + 暂停 + 多服务切换)
-- [ ] 快捷键:start/stop/restart(s/x/r)、日志切换(l)、全选操作(a/z)、过滤(/)、退出(q)
-- [ ] 连接状态指示 + 重连
-- [ ] 暗色主题(参考 serviceMgr-tui styles.go)
+- [x] **`warden tui` 子命令 ✅(2026-08-14)**:ratatui 0.30 + crossterm + reqwest + reqwest-eventsource(SSE 自动重连)。`--url`(默认 127.0.0.1:8789)/`--token`。三模块 `src/tui/{api,mod,ui}`:ApiClient(轻量反序列化,state 用 Value 解析)+ 事件循环(1s 状态刷新 + SSE 日志流 mpsc)+ 渲染(顶栏连接状态/服务表格/详情|日志面板/帮助栏)。快捷键 s/x/r/a/z/l/p/c//q。**验证**:tui_api_e2e 契约测试(真 HTTP:list/启停/start-all/stop-all/logs/SSE)+ 真实运行冒烟(连接 8791 显示 running=2 全表渲染)。38 测试全绿 + clippy/fmt clean。
+- [ ] 服务详情面板(配置、最近退出、健康状态)— 详情面板已有基础字段,健康状态等增强待做
+- [ ] 连接状态指示 + 重连 — 已有(顶栏 connected/reconnecting),断线重连由 eventsource 保证
+- [ ] 暗色主题(参考 serviceMgr-tui styles.go)— 已用暗色,样式微调待做
 
 ---
 

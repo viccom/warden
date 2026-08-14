@@ -15,6 +15,7 @@ pub mod logs;
 pub mod model;
 pub mod service;
 pub mod supervisor;
+pub mod tui;
 
 pub use error::{WResult, WardenError};
 
