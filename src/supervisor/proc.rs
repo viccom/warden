@@ -18,7 +18,9 @@ use super::ProcHandle;
 /// 监护循环:启动 → 监听退出 → 按策略重启,直到主动停止或熔断。
 pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
     loop {
-        let mut child = match spawn_child(&handle.config) {
+        // 每次重启取最新配置快照(运行中 update 保存的配置在此生效)
+        let cfg = handle.inner.lock().unwrap().config.clone();
+        let mut child = match spawn_child(&cfg) {
             Ok(c) => c,
             Err(e) => {
                 let mut g = handle.inner.lock().unwrap();
@@ -40,7 +42,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
 
         // 接管输出:两个 reader task 把 stdout/stderr 按行解码后推入 LogHub。
         // 解码编码按 output_encoding 解析(默认 UTF-8),GBK 等中文编码不再丢行。
-        let encoding = resolve_encoding(&handle.config.output_encoding);
+        let encoding = resolve_encoding(&cfg.output_encoding);
         if let Some(out) = child.stdout.take() {
             let log = Arc::clone(&handle.log);
             tokio::spawn(pipe_reader(out, log, LogStream::Stdout, encoding));
@@ -57,12 +59,12 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
             let job = match super::signal::create_job_tree() {
                 Ok(j) => {
                     if let Err(e) = super::signal::assign_to_job(&j, &child) {
-                        tracing::warn!("[supervisor] assign job 失败({}):{e}", handle.config.name);
+                        tracing::warn!("[supervisor] assign job 失败({}):{e}", cfg.name);
                     }
                     Some(j)
                 }
                 Err(e) => {
-                    tracing::warn!("[supervisor] create job 失败({}):{e}", handle.config.name);
+                    tracing::warn!("[supervisor] create job 失败({}):{e}", cfg.name);
                     None
                 }
             };
@@ -75,7 +77,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
             let mut g = handle.inner.lock().unwrap();
             if let Some(last) = g.last_started_at {
                 let elapsed = (now - last).num_seconds().max(0) as u64;
-                if elapsed >= handle.config.restart.restart_window_secs {
+                if elapsed >= cfg.restart.restart_window_secs {
                     g.restart_count = 0;
                 }
             }
@@ -105,9 +107,9 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
                 }
                 handle.log.push(LogStream::Stdout, crate::logs::LEVEL_INFO, "[warden] 发送优雅停止信号");
                 if let Err(e) = super::signal::send_graceful(pgid) {
-                    tracing::warn!("[supervisor] 发送 graceful 信号失败({}):{e}", handle.config.name);
+                    tracing::warn!("[supervisor] 发送 graceful 信号失败({}):{e}", cfg.name);
                 }
-                let timeout = std::time::Duration::from_secs(handle.config.graceful_timeout_secs);
+                let timeout = std::time::Duration::from_secs(cfg.graceful_timeout_secs);
                 match tokio::time::timeout(timeout, child.wait()).await {
                     Ok(_) => {
                         handle.log.push(LogStream::Stdout, crate::logs::LEVEL_INFO, "[warden] 优雅停止完成");
@@ -154,7 +156,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
         }
 
         // 未启用自动重启 → Failed
-        if !handle.config.auto_restart {
+        if !cfg.auto_restart {
             let mut g = handle.inner.lock().unwrap();
             g.state = ProcState::Failed {
                 reason: "进程退出且未启用 auto_restart".into(),
@@ -167,7 +169,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
         // 重启决策:超 max_retries 熔断,否则退避后重试
         let (attempt, delay) = {
             let mut g = handle.inner.lock().unwrap();
-            if g.restart_count >= handle.config.restart.max_retries {
+            if g.restart_count >= cfg.restart.max_retries {
                 g.state = ProcState::Failed {
                     reason: format!("重启次数超限({})", g.restart_count),
                     exit_code,
@@ -182,7 +184,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
             }
             g.restart_count += 1;
             let attempt = g.restart_count;
-            let delay = handle.config.restart.backoff_ms(attempt);
+            let delay = cfg.restart.backoff_ms(attempt);
             let next_at = Utc::now() + chrono::Duration::milliseconds(delay as i64);
             g.state = ProcState::Restarting { attempt, next_at };
             (attempt, delay)

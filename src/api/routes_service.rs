@@ -34,7 +34,8 @@ pub async fn get_config(
     Path(name): Path<String>,
 ) -> WResult<impl IntoResponse> {
     let h = st.supervisor.handle(&name)?;
-    Ok(Json(h.config.clone()))
+    let cfg = h.inner.lock().unwrap().config.clone();
+    Ok(Json(cfg))
 }
 
 pub async fn start(

@@ -26,8 +26,8 @@ pub fn spawn_health(
                 .handles
                 .iter()
                 .filter_map(|entry| {
-                    let hc = entry.config.health.clone()?;
                     let g = entry.inner.lock().unwrap();
+                    let hc = g.config.health.clone()?;
                     if !g.state.is_running() {
                         return None;
                     }
@@ -100,7 +100,7 @@ async fn check_one(entry: &super::ProcHandle, hc: &HealthCheck, webhook: Option<
     };
 
     if prev != next {
-        let name = &entry.config.name;
+        let name = &entry.inner.lock().unwrap().config.name;
         let detail = err.as_deref().unwrap_or("");
         let msg = format!(
             "[warden] 健康状态迁移:{name} {prev} → {next}{}",

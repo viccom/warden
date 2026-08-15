@@ -131,9 +131,9 @@ async fn crud_create_update_delete_and_overlay_persist() {
     let _ = std::fs::remove_dir_all(&data_dir);
 }
 
-/// 运行中的服务:PUT/DELETE 应拒绝(409)。
+/// 运行中的服务:PUT 允许保存配置(重启后生效,状态保留);DELETE 仍拒绝。
 #[tokio::test]
-async fn crud_rejects_while_running() {
+async fn crud_allows_update_while_running_but_not_delete() {
     let data_dir = tmpdir("run");
     let state = build_state(base_cfg(0, &data_dir), None);
     // POST 造一个可运行服务并启动
@@ -163,12 +163,25 @@ async fn crud_rejects_while_running() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    // 运行中:PUT/DELETE 应 409
-    let up = serde_json::json!({ "name": "busy", "command": "x" });
+    // 运行中:PUT 允许保存配置(重启后生效),进程状态保留
+    let up = serde_json::json!({ "name": "busy", "command": "cmd.exe", "args": ["/c", "echo", "saved"] });
     let r = hit(&state, "PUT", "/api/v1/services/busy", Some(up)).await;
-    assert_eq!(r.status(), 409, "运行中 PUT 应 409");
+    assert_eq!(r.status(), 200, "运行中 PUT 应允许保存配置");
+    assert!(
+        state.supervisor.status("busy").unwrap().state.is_running(),
+        "保存配置后服务应仍在运行"
+    );
+    // config 已更新(下次启动生效)
+    let r = hit(&state, "GET", "/api/v1/services/busy/config", None).await;
+    {
+        use axum::body::to_bytes;
+        let bytes = to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        let cfg: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(cfg["command"], "cmd.exe", "保存后 config 应已更新:{cfg}");
+    }
+    // 运行中:DELETE 仍 409
     let r = hit(&state, "DELETE", "/api/v1/services/busy", None).await;
-    assert_eq!(r.status(), 409, "运行中 DELETE 应 409");
+    assert_eq!(r.status(), 409, "运行中 DELETE 仍应 409");
     state.supervisor.stop_all().await;
     let _ = std::fs::remove_dir_all(&data_dir);
 }

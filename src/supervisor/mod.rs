@@ -136,7 +136,10 @@ impl Supervisor {
         let mut names: Vec<(String, u32)> = self
             .handles
             .iter()
-            .map(|e| (e.config.name.clone(), e.config.priority))
+            .map(|e| {
+                let g = e.inner.lock().unwrap();
+                (g.config.name.clone(), g.config.priority)
+            })
             .collect();
         names.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         if reverse {
@@ -151,7 +154,7 @@ impl Supervisor {
             .into_iter()
             .filter(|n| {
                 self.get(n)
-                    .map(|h| h.config.group.as_deref() == Some(group))
+                    .map(|h| h.inner.lock().unwrap().config.group.as_deref() == Some(group))
                     .unwrap_or(false)
             })
             .collect()
@@ -190,7 +193,8 @@ impl Supervisor {
 
     /// 启动所有 auto_start=true 的服务(daemon 启动时调用,按优先级顺序 + 就绪推进)。
     pub async fn start_auto(&self) {
-        self.start_ordered(|h| h.config.auto_start).await;
+        self.start_ordered(|h| h.inner.lock().unwrap().config.auto_start)
+            .await;
     }
 
     /// 就绪推进的等待目标:前序服务进入终态/稳态(Running/Failed/Restarting/Stopped)
@@ -249,11 +253,12 @@ impl Supervisor {
         Ok(())
     }
 
-    /// 更新服务配置(仅 Stopped/Failed 可改;remove + add 语义,重启后生效)。
+    /// 更新服务配置:运行中也允许保存(保留进程状态与日志句柄,
+    /// 新配置下次启动生效;health/组排序等读 config 的即时生效)。
+    /// 删除仍要求停止(remove)。name 必须已存在(ServiceNotFound)。
     pub fn update(&self, config: ServiceConfig) -> WResult<()> {
-        let name = config.name.clone();
-        self.remove(&name)?;
-        self.add(config);
+        let handle = self.get(&config.name)?;
+        handle.inner.lock().unwrap().config = config;
         Ok(())
     }
 
@@ -299,8 +304,11 @@ impl Supervisor {
             return;
         };
         let desired = Self::read_desired_map(&p);
-        self.start_ordered(|h| desired.get(&h.config.name).copied().unwrap_or(false))
-            .await;
+        self.start_ordered(|h| {
+            let name = h.inner.lock().unwrap().config.name.clone();
+            desired.get(&name).copied().unwrap_or(false)
+        })
+        .await;
     }
 
     pub fn status(&self, name: &str) -> WResult<ServiceStatus> {
@@ -335,7 +343,10 @@ impl Supervisor {
     }
 
     pub fn names(&self) -> Vec<String> {
-        self.handles.iter().map(|e| e.config.name.clone()).collect()
+        self.handles
+            .iter()
+            .map(|e| e.inner.lock().unwrap().config.name.clone())
+            .collect()
     }
 
     /// 启动后台 metrics 采样 task:周期遍历 Running 服务,按 PID 采 CPU/内存,
@@ -383,12 +394,13 @@ impl Supervisor {
 
 /// 单个被监护服务的句柄。
 pub struct ProcHandle {
-    pub config: ServiceConfig,
     pub log: Arc<LogHub>,
     pub(crate) inner: Mutex<ProcInner>,
 }
 
 pub(crate) struct ProcInner {
+    /// 当前配置(update 可运行中替换;supervise 每次重启取新快照生效)。
+    pub config: ServiceConfig,
     pub state: ProcState,
     pub restart_count: u32,
     pub last_started_at: Option<DateTime<Utc>>,
@@ -408,9 +420,9 @@ pub(crate) struct ProcInner {
 impl ProcHandle {
     pub fn new(config: ServiceConfig, log: Arc<LogHub>) -> Self {
         Self {
-            config,
             log,
             inner: Mutex::new(ProcInner {
+                config,
                 state: ProcState::Stopped,
                 restart_count: 0,
                 last_started_at: None,
@@ -428,8 +440,8 @@ impl ProcHandle {
     pub fn snapshot_status(&self) -> ServiceStatus {
         let g = self.inner.lock().unwrap();
         ServiceStatus {
-            name: self.config.name.clone(),
-            display_name: self.config.display_name.clone(),
+            name: g.config.name.clone(),
+            display_name: g.config.display_name.clone(),
             state: g.state.clone(),
             restart_count: g.restart_count,
             last_started_at: g.last_started_at,
@@ -437,10 +449,10 @@ impl ProcHandle {
             health: g.health.clone(),
             last_exit: g.last_exit.clone(),
             listening_ports: g.ports.clone(),
-            auto_start: self.config.auto_start,
-            auto_restart: self.config.auto_restart,
-            group: self.config.group.clone(),
-            priority: self.config.priority,
+            auto_start: g.config.auto_start,
+            auto_restart: g.config.auto_restart,
+            group: g.config.group.clone(),
+            priority: g.config.priority,
         }
     }
 
