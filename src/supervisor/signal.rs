@@ -41,6 +41,17 @@ pub fn install_console_shutdown(cancel: tokio_util::sync::CancellationToken) -> 
     windows_imp::install_console_shutdown(cancel)
 }
 
+/// 确保 warden 进程持有(隐藏的)console,使被监护子进程继承共享 console
+/// → 不弹终端窗口 + `GenerateConsoleCtrlEvent` 优雅停止仍可投递。
+///
+/// 适用:无 console 的宿主(桌面版 release / Service 模式)。行为:
+/// - 已有 console(如 dev 模式从终端启动):不动,终端保持可见
+/// - 无 console:`AllocConsole` 新建并 `ShowWindow(SW_HIDE)` 隐藏窗口
+#[cfg(windows)]
+pub fn ensure_hidden_console() {
+    windows_imp::ensure_hidden_console()
+}
+
 /// 创建进程树追踪对象(Windows=Job Object;Unix=无,靠 pgid)。
 pub fn create_job_tree() -> io::Result<JobTree> {
     #[cfg(windows)]
@@ -100,7 +111,8 @@ mod windows_imp {
     use tokio_util::sync::CancellationToken;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::Console::{
-        GenerateConsoleCtrlEvent, SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_C_EVENT,
+        AllocConsole, GenerateConsoleCtrlEvent, GetConsoleWindow, SetConsoleCtrlHandler,
+        CTRL_BREAK_EVENT, CTRL_C_EVENT,
     };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
@@ -196,6 +208,20 @@ mod windows_imp {
             }
         }
         Ok(())
+    }
+
+    pub fn ensure_hidden_console() {
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+            // AllocConsole 在已有 console 时失败(ERROR_ACCESS_DENIED)——此时不隐藏,
+            // 保持 dev/CLI 场景终端可见。
+            if AllocConsole() != 0 {
+                let hwnd = GetConsoleWindow();
+                if !hwnd.is_null() {
+                    ShowWindow(hwnd, SW_HIDE);
+                }
+            }
+        }
     }
 
     pub fn force_kill_tree(job: &JobGuard) {

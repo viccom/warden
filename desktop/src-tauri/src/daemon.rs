@@ -18,6 +18,11 @@ use warden::api::{build_router, build_state};
 
 /// 起内嵌 daemon(阻塞直到 listener 就绪),返回端口/token 与停止句柄。
 pub fn start(app_data: &Path) -> anyhow::Result<EmbeddedDaemon> {
+    // Windows:确保持有隐藏 console → 被监护子进程不弹终端窗口,
+    // 且 CTRL_BREAK 优雅停止可投递(无 console 宿主二者皆失)。
+    #[cfg(windows)]
+    warden::supervisor::signal::ensure_hidden_console();
+
     // 配置:复用 CLI 路径规则($WARDEN_CONFIG → exe_dir → cwd → 平台位置);缺配置则空集
     let mut cfg = warden::config::Config::load(None).unwrap_or_else(|e| {
         eprintln!("[warden-desktop] 配置加载失败({e}),以空配置启动(可经界面 CRUD 添加服务)");
