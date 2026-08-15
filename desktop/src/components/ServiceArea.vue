@@ -2,7 +2,7 @@
 import { computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { store, visibleServices, groupsOfVisible, groupAction, serviceAction } from '../store';
-import { clientFor, showToast } from '../api';
+import { clientFor, showToast, tokenOf } from '../api';
 
 const groups = computed(() => groupsOfVisible());
 const services = computed(() => visibleServices());
@@ -43,12 +43,6 @@ async function remove(s) {
   } catch (e) {
     showToast('删除失败:' + e.message, true);
   }
-}
-function tokenOf(url) {
-  const n = store.local && store.local.url === url
-    ? { token: store.local.token }
-    : store.nodes.find(n => n.url === url);
-  return n?.token || '';
 }
 
 function metaLine(s) {

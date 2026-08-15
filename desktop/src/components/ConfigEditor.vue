@@ -2,13 +2,9 @@
 // 配置文件编辑器:读/写节点侧 config-file API(toml/json 保存前校验,可格式化)。
 import { ref, computed, onMounted } from 'vue';
 import { store } from '../store';
-import { clientFor, showToast } from '../api';
+import { clientFor, showToast, tokenOf } from '../api';
 
 const form = store.configEditor; // {nodeUrl, name}
-const tokenOf = () => {
-  if (store.local && store.local.url === form.nodeUrl) return store.local.token;
-  return store.nodes.find(n => n.url === form.nodeUrl)?.token || '';
-};
 
 const path = ref('');
 const format = ref('text');
@@ -18,7 +14,7 @@ const err = ref('');
 const dirty = ref(false);
 const saving = ref(false);
 
-const client = clientFor({ url: form.nodeUrl, token: tokenOf() });
+const client = clientFor({ url: form.nodeUrl, token: tokenOf(form.nodeUrl) });
 // toml/json 由 daemon 校验+可格式化;yaml/ini/text 原样保存
 const formattable = computed(() => format.value === 'toml' || format.value === 'json');
 

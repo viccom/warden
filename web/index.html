@@ -54,6 +54,16 @@
   .side-title { padding: 14px 18px; font-size: 14px; font-weight: 600; color: var(--sub);
                 border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
   .side-title .count { background: var(--panel2); border-radius: 20px; padding: 2px 10px; font-size: 12px; color: var(--text); }
+  .groupbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .groupbar .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; font-size: 12px;
+                    background: var(--panel); border: 1px solid var(--border); border-radius: 999px; cursor: pointer; }
+  .groupbar .chip:hover { border-color: #4a4a6a; }
+  .groupbar .chip.on { border-color: var(--blue); color: var(--blue); }
+  .groupbar .chip .gops { display: none; gap: 2px; }
+  .groupbar .chip:hover .gops { display: inline-flex; }
+  .groupbar .chip .gops button { padding: 0 5px; font-size: 10px; line-height: 16px; background: transparent;
+                                  border: none; color: var(--sub); cursor: pointer; }
+  .groupbar .chip .gops button:hover { color: var(--text); }
   #services { flex: 1; overflow-y: auto; padding: 8px; }
   .svc { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px;
          cursor: pointer; transition: border-color .15s, background .15s; }
@@ -154,6 +164,7 @@
       <span>服务列表 <span class="count" id="svcCount">0</span></span>
       <button class="btn primary sm" onclick="openForm()">＋ 新增服务</button>
     </div>
+    <div class="groupbar" id="groupbar"></div>
     <div id="services"><div class="empty">加载中…</div></div>
   </aside>
   <section class="logpanel">
@@ -182,6 +193,7 @@
   <div class="modal">
     <h3 id="formTitle">新增服务</h3>
     <div class="field"><label>名称 *</label><input id="f_name" type="text" placeholder="唯一标识(不可含 / \ : * ? &quot; &lt; &gt; |)"></div>
+    <div class="field"><label>描述</label><input id="f_description" type="text" placeholder="如 REST :8790 / lux :6390"></div>
     <div class="field"><label>可执行文件路径 *</label><input id="f_command" type="text" placeholder="如 E:/rsiot-field/bin/rs-iot.exe"></div>
     <div class="field"><label>参数(每行一个)</label><textarea id="f_args" placeholder="-n&#10;60&#10;127.0.0.1"></textarea></div>
     <div class="row">
@@ -193,7 +205,20 @@
       <div class="field"><label>分组(可选标签)</label><input id="f_group" type="text" placeholder="如 core"></div>
       <div class="field"><label>启动优先级(小者先启动)</label><input id="f_priority" type="number" value="0" min="0"></div>
     </div>
+    <div class="row">
+      <div class="field"><label>最大重试次数</label><input id="f_maxretries" type="number" value="3" min="0"></div>
+      <div class="field"><label>计数重置窗口(秒)</label><input id="f_restartwin" type="number" value="60" min="0"></div>
+    </div>
     <div class="field"><label>环境变量(每行 KEY=VAL)</label><textarea id="f_env" placeholder="RUST_LOG=debug&#10;TZ=Asia/Shanghai"></textarea></div>
+    <div class="row">
+      <div class="field"><label>健康检查 host(留空=不启用)</label><input id="f_healthhost" type="text" placeholder="如 127.0.0.1"></div>
+      <div class="field"><label>健康检查端口</label><input id="f_healthport" type="number" placeholder="如 8790"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>健康检查超时(ms)</label><input id="f_healthtimeout" type="number" value="2000" min="100"></div>
+      <div class="field"><label>健康检查间隔(秒)</label><input id="f_healthinterval" type="number" value="5" min="1"></div>
+    </div>
+    <div class="field"><label>配置文件(桌面版「编辑」按钮用;此处仅保存路径)</label><input id="f_configfile" type="text" placeholder="如 E:/rsiot-field/config.toml"></div>
     <div class="chk">
       <label><input id="f_autostart" type="checkbox"> 自动启动</label>
       <label><input id="f_autorestart" type="checkbox"> 崩溃自动重启</label>
@@ -246,12 +271,15 @@ async function loadHealth() {
 }
 
 // ── 左栏:服务列表 ───────────────────────────────────
+let groupFilter = 'ALL'; // 'ALL' | 'UNGROUPED' | 组名
+
 async function loadServices() {
   try {
     const data = await api('/api/v1/services');
     currentList = data.services || [];
     document.getElementById('svcCount').textContent = currentList.length;
-    renderServices(currentList);
+    renderGroupbar();
+    renderServices(applyGroupFilter(currentList));
   } catch (e) {
     const hint = e.message && e.message.includes('401')
       ? '需要鉴权:请在上方填写 token 并保存'
@@ -260,6 +288,53 @@ async function loadServices() {
       '<div class="empty">加载失败:' + hint + '</div>';
   }
 }
+
+function applyGroupFilter(list) {
+  if (groupFilter === 'ALL') return list;
+  if (groupFilter === 'UNGROUPED') return list.filter(s => !s.group);
+  return list.filter(s => s.group === groupFilter);
+}
+
+/// 组过滤 chips + 组级启停(悬停出 ▶/■;调 daemon 组 API,按优先序/逆序执行)。
+function renderGroupbar() {
+  const bar = document.getElementById('groupbar');
+  bar.innerHTML = '';
+  const counts = new Map();
+  for (const s of currentList) if (s.group) counts.set(s.group, (counts.get(s.group) || 0) + 1);
+  const chips = [{ key: 'ALL', label: '全部', count: currentList.length },
+                 { key: 'UNGROUPED', label: '未分组', count: currentList.filter(s => !s.group).length },
+                 ...[...counts.entries()].map(([g, c]) => ({ key: g, label: g, count: c }))];
+  for (const c of chips) {
+    const chip = document.createElement('span');
+    chip.className = 'chip' + (groupFilter === c.key ? ' on' : '');
+    chip.onclick = () => { groupFilter = c.key; loadServices(); };
+    const name = document.createElement('span');
+    name.textContent = c.label + ' ' + c.count;
+    chip.appendChild(name);
+    if (c.key !== 'ALL' && c.key !== 'UNGROUPED') {
+      const ops = document.createElement('span');
+      ops.className = 'gops';
+      const b1 = document.createElement('button');
+      b1.textContent = '▶'; b1.title = '组内全部启动(按优先级)';
+      b1.onclick = (ev) => { ev.stopPropagation(); groupAction(c.key, 'start'); };
+      const b2 = document.createElement('button');
+      b2.textContent = '■'; b2.title = '组内全部停止(逆序)';
+      b2.onclick = (ev) => { ev.stopPropagation(); groupAction(c.key, 'stop'); };
+      ops.append(b1, b2);
+      chip.appendChild(ops);
+    }
+    bar.appendChild(chip);
+  }
+}
+
+async function groupAction(group, act) {
+  try {
+    await api('/api/v1/groups/' + enc(group) + '/' + act, 'POST');
+    showToast('组 ' + act + ' 已下发:' + group);
+    setTimeout(loadServices, 300);
+  } catch (e) { showToast('组操作失败:' + e.message, true); }
+}
+
 function renderServices(list) {
   const box = document.getElementById('services');
   box.innerHTML = '';
@@ -480,22 +555,30 @@ function saveToken() {
 
 // ── 新增/编辑服务表单 ────────────────────────────────
 let editingName = null; // null=新增;否则=编辑的服务名
+let editingCfg = null;  // 编辑时加载的完整配置(表单未暴露的字段保存时原样回传,防丢失)
 function openForm(name) {
   editingName = name || null;
+  editingCfg = null;
   document.getElementById('formErr').textContent = '';
   document.getElementById('formTitle').textContent = name ? '编辑服务:' + name : '新增服务';
-  ['f_name','f_command','f_args','f_workdir','f_encoding','f_env','f_group'].forEach(id => {
+  ['f_name','f_command','f_args','f_workdir','f_encoding','f_env','f_group','f_description','f_configfile','f_healthhost','f_healthport'].forEach(id => {
     document.getElementById(id).value = '';
   });
   document.getElementById('f_graceful').value = '10';
   document.getElementById('f_priority').value = '0';
+  document.getElementById('f_maxretries').value = '3';
+  document.getElementById('f_restartwin').value = '60';
+  document.getElementById('f_healthtimeout').value = '2000';
+  document.getElementById('f_healthinterval').value = '5';
   document.getElementById('f_autostart').checked = false;
   document.getElementById('f_autorestart').checked = false;
   if (name) {
-    // 编辑:拉完整配置预填
+    // 编辑:拉完整配置预填(含 restart/health 子字段,避免保存时被 serde default 重置)
     api('/api/v1/services/' + enc(name) + '/config').then(cfg => {
+      editingCfg = cfg;
       document.getElementById('f_name').value = cfg.name || '';
       document.getElementById('f_name').disabled = true; // PUT 要求 body.name==路径名
+      document.getElementById('f_description').value = cfg.description || '';
       document.getElementById('f_command').value = cfg.command || '';
       document.getElementById('f_args').value = (cfg.args || []).join('\n');
       document.getElementById('f_workdir').value = cfg.working_dir || '';
@@ -503,7 +586,14 @@ function openForm(name) {
       document.getElementById('f_encoding').value = cfg.output_encoding || '';
       document.getElementById('f_group').value = cfg.group || '';
       document.getElementById('f_priority').value = cfg.priority ?? 0;
+      document.getElementById('f_maxretries').value = cfg.restart?.max_retries ?? 3;
+      document.getElementById('f_restartwin').value = cfg.restart?.restart_window_secs ?? 60;
       document.getElementById('f_env').value = Object.entries(cfg.environment || {}).map(([k,v]) => k + '=' + v).join('\n');
+      document.getElementById('f_healthhost').value = cfg.health?.host || '';
+      document.getElementById('f_healthport').value = cfg.health?.port || '';
+      document.getElementById('f_healthtimeout').value = cfg.health?.timeout_ms ?? 2000;
+      document.getElementById('f_healthinterval').value = cfg.health?.interval_secs ?? 5;
+      document.getElementById('f_configfile').value = cfg.config_file || '';
       document.getElementById('f_autostart').checked = !!cfg.auto_start;
       document.getElementById('f_autorestart').checked = !!cfg.auto_restart;
     }).catch(e => showToast('加载配置失败:' + e.message, true));
@@ -522,6 +612,7 @@ function submitForm() {
   const cfg = {
     name,
     command,
+    description: document.getElementById('f_description').value.trim(),
     args: document.getElementById('f_args').value.split('\n').map(s => s.trim()).filter(Boolean),
     working_dir: document.getElementById('f_workdir').value.trim() || null,
     graceful_timeout_secs: parseInt(document.getElementById('f_graceful').value) || 10,
@@ -530,6 +621,26 @@ function submitForm() {
     priority: parseInt(document.getElementById('f_priority').value) || 0,
     auto_start: document.getElementById('f_autostart').checked,
     auto_restart: document.getElementById('f_autorestart').checked,
+    // 重启策略显式回传(表单只暴露 max_retries/窗口;退避参数编辑时保留原值)
+    restart: {
+      max_retries: parseInt(document.getElementById('f_maxretries').value) || 0,
+      backoff_initial_ms: editingCfg?.restart?.backoff_initial_ms ?? 1000,
+      backoff_max_ms: editingCfg?.restart?.backoff_max_ms ?? 60000,
+      backoff_factor: editingCfg?.restart?.backoff_factor ?? 2.0,
+      restart_window_secs: parseInt(document.getElementById('f_restartwin').value) || 60,
+    },
+    // ui_url 表单不暴露(桌面版专属入口),编辑时原样保留
+    ui_url: editingCfg?.ui_url ?? null,
+    config_file: document.getElementById('f_configfile').value.trim() || null,
+    health: (document.getElementById('f_healthhost').value.trim() && document.getElementById('f_healthport').value)
+      ? {
+          type: 'tcp',
+          host: document.getElementById('f_healthhost').value.trim(),
+          port: parseInt(document.getElementById('f_healthport').value),
+          timeout_ms: parseInt(document.getElementById('f_healthtimeout').value) || 2000,
+          interval_secs: parseInt(document.getElementById('f_healthinterval').value) || 5,
+        }
+      : null,
     environment: {},
   };
   // 环境变量 KEY=VAL 每行

@@ -74,7 +74,21 @@ pub async fn run_app_with_shutdown(
         "[warden] {VERSION} 启动,配置 {} 个服务,api_bind={bind}",
         cfg.services.len()
     );
+    let listener = TcpListener::bind(&bind)
+        .await
+        .map_err(|e| anyhow::anyhow!("bind {bind} 失败:{e}"))?;
+    serve_with_shutdown(cfg, config_path, listener, shutdown).await
+}
 
+/// 共享 serve 编排(CLI 前台/Service/桌面版内嵌 daemon 同一实现):
+/// build state → start_auto → desired → metrics → health → serve(5s drain 上限)→ stop_all。
+/// listener 由调用方绑定(CLI 用配置端口;桌面版用随机端口)。
+pub async fn serve_with_shutdown(
+    cfg: config::Config,
+    config_path: Option<PathBuf>,
+    listener: TcpListener,
+    shutdown: CancellationToken,
+) -> anyhow::Result<()> {
     let alert_webhook = cfg.daemon.alert_webhook.clone();
     let state = api::build_state(cfg, config_path);
     state.supervisor.start_auto().await;
@@ -89,10 +103,13 @@ pub async fn run_app_with_shutdown(
 
     let supervisor = state.supervisor.clone();
     let app = api::build_router(state);
-    let listener = TcpListener::bind(&bind)
-        .await
-        .map_err(|e| anyhow::anyhow!("bind {bind} 失败:{e}"))?;
-    tracing::info!("[warden] HTTP API listening on {bind}");
+    tracing::info!(
+        "[warden] HTTP API listening on {}",
+        listener
+            .local_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_default()
+    );
 
     // shutdown 触发时停所有被监护服务(graceful),与 axum graceful 并行
     let stop_sup = supervisor.clone();

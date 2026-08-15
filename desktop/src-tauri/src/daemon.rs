@@ -7,14 +7,13 @@
 //!   防止两个 daemon 同写 desired_state.json / runtime overlay)
 //! - 无 console 信号处理(退出由托盘/命令触发 shutdown token)
 //! - 配置缺失不退出(空配置起步,服务经 CRUD 添加)
+//! serve 编排(start_auto→desired→metrics→health→serve→stop_all)复用
+//! `warden::serve_with_shutdown`,与 CLI/Service 同一实现。
 
 use std::path::Path;
-use std::time::Duration;
 
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-
-use warden::api::{build_router, build_state};
 
 /// 起内嵌 daemon(阻塞直到 listener 就绪),返回端口/token 与停止句柄。
 pub fn start(app_data: &Path) -> anyhow::Result<EmbeddedDaemon> {
@@ -37,56 +36,21 @@ pub fn start(app_data: &Path) -> anyhow::Result<EmbeddedDaemon> {
     cfg.daemon.auth_token = token.clone();
 
     let shutdown = CancellationToken::new();
-    let alert_webhook = cfg.daemon.alert_webhook.clone();
-    let state = build_state(cfg, None);
-    let supervisor = state.supervisor.clone();
-    let router = build_router(state);
-
     // block_on:setup 是同步上下文,需在返回前拿到实际端口
     let listener =
         tauri::async_runtime::block_on(async { TcpListener::bind("127.0.0.1:0").await })?;
     let port = listener.local_addr()?.port();
 
-    // 编排对齐 lib.rs run_app_with_shutdown:start_auto → desired → metrics → health → serve
-    let boot_sup = supervisor.clone();
     let serve_shutdown = shutdown.clone();
     let done = tauri::async_runtime::spawn(async move {
-        boot_sup.start_auto().await;
-        boot_sup.start_desired().await;
-        boot_sup.clone().spawn_metrics(Duration::from_secs(2));
-        warden::supervisor::health::spawn_health(boot_sup.clone(), alert_webhook);
-
-        // shutdown 触发时逆序停全部被监护服务(graceful),与 serve 收尾并行
-        let stop_sup = boot_sup.clone();
-        let stop_shutdown = serve_shutdown.clone();
-        let drain_limit = stop_shutdown.clone();
-        let stop_task = tokio::spawn(async move {
-            stop_shutdown.cancelled().await;
-            stop_sup.stop_all().await;
-        });
-        let serve = axum::serve(listener, router).with_graceful_shutdown(async move {
-            serve_shutdown.cancelled().await;
-        });
-        tokio::select! {
-            r = serve => {
-                if let Err(e) = r {
-                    eprintln!("[warden-desktop] axum serve error: {e}");
-                }
-            }
-            _ = async move {
-                drain_limit.cancelled().await;
-                tokio::time::sleep(Duration::from_secs(5)).await;
-            } => {
-                eprintln!("[warden-desktop] HTTP 连接 5s 内未全部关闭,强制断开");
-            }
+        if let Err(e) = warden::serve_with_shutdown(cfg, None, listener, serve_shutdown).await {
+            eprintln!("[warden-desktop] 内嵌 daemon 退出:{e}");
         }
-        let _ = stop_task.await;
     });
 
     Ok(EmbeddedDaemon {
         port,
         token,
-        supervisor,
         shutdown,
         done: tokio::sync::Mutex::new(Some(done)),
     })
@@ -96,9 +60,6 @@ pub fn start(app_data: &Path) -> anyhow::Result<EmbeddedDaemon> {
 pub struct EmbeddedDaemon {
     pub port: u16,
     pub token: String,
-    /// 监护引擎句柄(预留:P2 托盘快捷操作直接进程内调用)。
-    #[expect(dead_code)]
-    pub supervisor: std::sync::Arc<warden::supervisor::Supervisor>,
     shutdown: CancellationToken,
     done: tokio::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }

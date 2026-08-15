@@ -28,11 +28,10 @@ pub fn dispatch() -> anyhow::Result<()> {
 }
 
 fn service_main(_arguments: Vec<std::ffi::OsString>) {
-    // 会话 0 默认无 console:AllocConsole 创建不可见 console,使被监护子进程继承
+    // 会话 0 默认无 console:确保持有(隐藏)console,使被监护子进程继承
     // → CTRL_BREAK graceful 链路在 Service 模式下仍有效。
-    unsafe {
-        let _ = windows_sys::Win32::System::Console::AllocConsole();
-    }
+    // 与桌面版共用同一入口(已持有 console 时为 no-op)。
+    crate::supervisor::signal::ensure_hidden_console();
 
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let event_handler = move |ctrl: ServiceControl| -> ServiceControlHandlerResult {

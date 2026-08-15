@@ -1,13 +1,9 @@
 <script setup>
 import { ref, onMounted } from 'vue';
 import { store, refresh } from '../store';
-import { clientFor, showToast } from '../api';
+import { clientFor, showToast, tokenOf } from '../api';
 
 const form = store.serviceForm; // {mode, nodeUrl, name?}
-const tokenOf = () => {
-  if (store.local && store.local.url === form.nodeUrl) return store.local.token;
-  return store.nodes.find(n => n.url === form.nodeUrl)?.token || '';
-};
 
 const editing = form.mode === 'edit';
 const f = ref(blank());
@@ -95,7 +91,7 @@ function parseEnv(text) {
 onMounted(async () => {
   if (!editing) return;
   try {
-    const cfg = await clientFor({ url: form.nodeUrl, token: tokenOf() }).config(form.name);
+    const cfg = await clientFor({ url: form.nodeUrl, token: tokenOf(form.nodeUrl) }).config(form.name);
     f.value = {
       name: cfg.name || '',
       display_name: cfg.display_name || '',
@@ -132,7 +128,7 @@ async function save() {
   const cfg = toCfg();
   if (!cfg.name || !cfg.command) { err.value = '名称和可执行文件路径必填'; return; }
   if (cfg.group.includes('/')) { err.value = "分组名不能含 '/'"; return; }
-  const c = clientFor({ url: form.nodeUrl, token: tokenOf() });
+  const c = clientFor({ url: form.nodeUrl, token: tokenOf(form.nodeUrl) });
   try {
     if (editing) await c.updateService(form.name, cfg);
     else await c.createService(cfg);
