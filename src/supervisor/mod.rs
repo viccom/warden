@@ -7,6 +7,7 @@
 
 pub mod health;
 pub mod metrics;
+pub mod ports;
 pub mod proc;
 pub mod signal;
 
@@ -24,6 +25,8 @@ use crate::config::Config;
 use crate::error::{WResult, WardenError};
 use crate::logs::{LogHub, RollingFile};
 use crate::model::{HealthStatus, LastExit, ProcMetrics, ProcState, ServiceConfig};
+
+pub use ports::ListeningSocket;
 
 /// 监护引擎,持有所有被监护服务。
 pub struct Supervisor {
@@ -127,32 +130,72 @@ impl Supervisor {
         self.start(name).await
     }
 
-    /// 启动所有服务。
-    pub async fn start_all(&self) {
-        let names: Vec<String> = self.handles.iter().map(|e| e.config.name.clone()).collect();
-        for n in names {
-            let _ = self.start(&n).await;
+    /// 按启动顺序返回服务名(priority 升序,同值按 name 字典序);
+    /// reverse=true 为停止顺序(启动序的逆序,被依赖方最后停)。
+    pub fn ordered_names(&self, reverse: bool) -> Vec<String> {
+        let mut names: Vec<(String, u32)> = self
+            .handles
+            .iter()
+            .map(|e| (e.config.name.clone(), e.config.priority))
+            .collect();
+        names.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        if reverse {
+            names.reverse();
         }
+        names.into_iter().map(|(n, _)| n).collect()
     }
 
-    /// 停止所有运行中/重启中的服务。
+    /// 启动所有服务(按优先级顺序 + 就绪推进)。
+    pub async fn start_all(&self) {
+        self.start_ordered(|_| true).await;
+    }
+
+    /// 停止所有运行中/重启中的服务(启动序的逆序,被依赖方最后停)。
     pub async fn stop_all(&self) {
-        let names: Vec<String> = self.handles.iter().map(|e| e.config.name.clone()).collect();
-        for n in names {
+        for n in self.ordered_names(true) {
             let _ = self.stop(&n).await;
         }
     }
 
-    /// 启动所有 auto_start=true 的服务(daemon 启动时调用)。
+    /// 启动所有 auto_start=true 的服务(daemon 启动时调用,按优先级顺序 + 就绪推进)。
     pub async fn start_auto(&self) {
-        let names: Vec<String> = self
-            .handles
-            .iter()
-            .filter(|e| e.config.auto_start)
-            .map(|e| e.config.name.clone())
-            .collect();
-        for n in names {
+        self.start_ordered(|h| h.config.auto_start).await;
+    }
+
+    /// 就绪推进的等待目标:前序服务进入终态/稳态(Running/Failed/Restarting/Stopped)
+    /// 或超时后,才发起下一个服务,使被依赖方(小 priority)先就绪;
+    /// 单个服务异常不阻塞整组拉起。慢启动服务超时被跳过仅指不再等待,不取消启动。
+    const START_READY_TIMEOUT: Duration = Duration::from_secs(15);
+
+    /// 按启动顺序逐个启动(过滤谓词筛选参与的服务),每个就绪推进后再启动下一个。
+    async fn start_ordered(&self, include: impl Fn(&ProcHandle) -> bool) {
+        for n in self.ordered_names(false) {
+            let Ok(h) = self.get(&n) else {
+                continue;
+            };
+            if !include(&h) {
+                continue;
+            }
             let _ = self.start(&n).await;
+            self.wait_started(&n).await;
+        }
+    }
+
+    /// 等待服务离开 Starting(就绪/终态)或超时兜底返回。
+    async fn wait_started(&self, name: &str) {
+        let deadline = tokio::time::Instant::now() + Self::START_READY_TIMEOUT;
+        loop {
+            let settled = match self.get(name) {
+                Ok(h) => {
+                    let g = h.inner.lock().unwrap();
+                    !matches!(g.state, ProcState::Starting)
+                }
+                Err(_) => true,
+            };
+            if settled || tokio::time::Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -218,23 +261,15 @@ impl Supervisor {
         }
     }
 
-    /// 启动 desired=true 且当前未运行的服务(daemon 启动时在 start_auto 之后调用)。
+    /// 启动 desired=true 且当前未运行的服务(daemon 启动时在 start_auto 之后调用,
+    /// 按优先级顺序 + 就绪推进,恢复语义与手动 start_all 一致)。
     pub async fn start_desired(&self) {
         let Some(p) = self.desired_path() else {
             return;
         };
-        for (name, want) in Self::read_desired_map(&p) {
-            if !want {
-                continue;
-            }
-            if let Ok(h) = self.get(&name) {
-                let running = h.inner.lock().unwrap().state.is_running();
-                if !running {
-                    tracing::info!("[warden] 恢复期望状态:启动 {name}");
-                    let _ = self.start(&name).await;
-                }
-            }
-        }
+        let desired = Self::read_desired_map(&p);
+        self.start_ordered(|h| desired.get(&h.config.name).copied().unwrap_or(false))
+            .await;
     }
 
     pub fn status(&self, name: &str) -> WResult<ServiceStatus> {
@@ -272,13 +307,27 @@ impl Supervisor {
         self.handles.iter().map(|e| e.config.name.clone()).collect()
     }
 
-    /// 启动后台 metrics 采样 task:周期遍历 Running 服务,按 PID 采 CPU/内存。
+    /// 启动后台 metrics 采样 task:周期遍历 Running 服务,按 PID 采 CPU/内存,
+    /// 并刷新监听端口(服务 PID 子树内实际 LISTEN/绑定的 TCP/UDP,含孙进程)。
     pub fn spawn_metrics(self: Arc<Self>, interval: Duration) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut sys = sysinfo::System::new();
             loop {
                 tokio::time::sleep(interval).await;
                 metrics::refresh(&mut sys);
+                let index = ports::children_index(&sys);
+                // 全表 socket 采集一次供全部服务共享;阻塞 OS 调用放 spawn_blocking
+                let rows = match tokio::task::spawn_blocking(ports::collect_rows).await {
+                    Ok(Ok(r)) => r,
+                    Ok(Err(e)) => {
+                        tracing::warn!("[metrics] 端口表采集失败:{e}");
+                        Vec::new()
+                    }
+                    Err(e) => {
+                        tracing::warn!("[metrics] 端口采集任务 join 失败:{e}");
+                        Vec::new()
+                    }
+                };
                 for entry in self.handles.iter() {
                     let pid = {
                         let g = entry.inner.lock().unwrap();
@@ -288,9 +337,12 @@ impl Supervisor {
                         }
                     };
                     if let Some(pid) = pid {
+                        let mut g = entry.inner.lock().unwrap();
                         if let Some(m) = metrics::sample_one(&sys, pid) {
-                            entry.inner.lock().unwrap().metrics = m;
+                            g.metrics = m;
                         }
+                        let set = ports::subtree_from(&index, pid);
+                        g.ports = ports::filter_listening(&rows, &set);
                     }
                 }
             }
@@ -314,6 +366,8 @@ pub(crate) struct ProcInner {
     pub health: HealthStatus,
     /// 最近一次自然退出(崩溃/正常退出;主动 stop 不记)。
     pub last_exit: Option<LastExit>,
+    /// 监听端口快照(metrics task 周期刷新;服务 PID 子树内,含孙进程)。
+    pub ports: Vec<ListeningSocket>,
     pub cancel: Option<CancellationToken>,
     pub task: Option<tokio::task::JoinHandle<()>>,
     /// 进程树追踪(Windows Job Object / Unix 进程组):stop 时强杀 + 崩溃保护。
@@ -332,6 +386,7 @@ impl ProcHandle {
                 metrics: ProcMetrics::default(),
                 health: HealthStatus::default(),
                 last_exit: None,
+                ports: Vec::new(),
                 cancel: None,
                 task: None,
                 job: None,
@@ -350,8 +405,11 @@ impl ProcHandle {
             metrics: g.metrics.clone(),
             health: g.health.clone(),
             last_exit: g.last_exit.clone(),
+            listening_ports: g.ports.clone(),
             auto_start: self.config.auto_start,
             auto_restart: self.config.auto_restart,
+            group: self.config.group.clone(),
+            priority: self.config.priority,
         }
     }
 
@@ -390,6 +448,56 @@ pub struct ServiceStatus {
     pub metrics: ProcMetrics,
     pub health: HealthStatus,
     pub last_exit: Option<LastExit>,
+    /// 监听端口(TCP LISTEN / UDP 绑定;服务 PID 子树,含孙进程)。
+    pub listening_ports: Vec<ListeningSocket>,
     pub auto_start: bool,
     pub auto_restart: bool,
+    /// 分组标签(纯展示)。
+    pub group: Option<String>,
+    /// 启动优先级(小者先启动、后停止)。
+    pub priority: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn svc(name: &str, priority: u32) -> ServiceConfig {
+        ServiceConfig {
+            name: name.into(),
+            display_name: String::new(),
+            description: String::new(),
+            command: "true".into(),
+            args: vec![],
+            working_dir: None,
+            environment: HashMap::new(),
+            auto_start: false,
+            auto_restart: false,
+            restart: Default::default(),
+            health: None,
+            ui_url: None,
+            graceful_timeout_secs: 1,
+            output_encoding: None,
+            group: None,
+            priority,
+        }
+    }
+
+    #[test]
+    fn start_order_sorts_by_priority_then_name() {
+        let sv = Supervisor::new(PathBuf::from(""));
+        sv.add(svc("a", 20));
+        sv.add(svc("b", 10));
+        sv.add(svc("c", 10)); // 与 b 同 priority,按 name 字典序
+        assert_eq!(sv.ordered_names(false), vec!["b", "c", "a"]);
+    }
+
+    #[test]
+    fn stop_order_is_reverse_of_start_order() {
+        let sv = Supervisor::new(PathBuf::from(""));
+        sv.add(svc("a", 20));
+        sv.add(svc("b", 10));
+        sv.add(svc("c", 10));
+        assert_eq!(sv.ordered_names(true), vec!["a", "c", "b"]);
+    }
 }

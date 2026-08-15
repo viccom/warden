@@ -27,6 +27,16 @@ path = "tests/helpers/graceful_target.rs"
 name = "gbk_target"
 path = "tests/helpers/gbk_target.rs"
 
+# 测试辅助二进制:启动/停止时向 stamp 文件追加标记,验证有序启停(优先级)
+[[bin]]
+name = "stamp_target"
+path = "tests/helpers/stamp_target.rs"
+
+# 测试辅助二进制:绑定随机 TCP/UDP 端口并自报,验证监听端口发现
+[[bin]]
+name = "port_listener_target"
+path = "tests/helpers/port_listener_target.rs"
+
 # 诊断二进制:打印 crossterm 读到的按键事件(定位 TUI 方向键无响应)
 [[bin]]
 name = "keys_probe"
@@ -63,6 +73,7 @@ ratatui = "0.30"
 crossterm = { version = "0.28", features = ["events"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 reqwest-eventsource = "0.6"
+netstat2 = "0.11.2"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

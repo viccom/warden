@@ -27,6 +27,8 @@ fn svc(name: &str, cmd: &str, args: Vec<String>, graceful_timeout: u64) -> Servi
         ui_url: None,
         graceful_timeout_secs: graceful_timeout,
         output_encoding: None,
+        group: None,
+        priority: 0,
     }
 }
 

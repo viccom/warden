@@ -189,6 +189,10 @@
       <div class="field"><label>优雅停止超时(秒)</label><input id="f_graceful" type="number" value="10" min="0"></div>
     </div>
     <div class="field"><label>输出编码(如 gbk;空=UTF-8)</label><input id="f_encoding" type="text" placeholder="可选"></div>
+    <div class="row">
+      <div class="field"><label>分组(可选标签)</label><input id="f_group" type="text" placeholder="如 core"></div>
+      <div class="field"><label>启动优先级(小者先启动)</label><input id="f_priority" type="number" value="0" min="0"></div>
+    </div>
     <div class="field"><label>环境变量(每行 KEY=VAL)</label><textarea id="f_env" placeholder="RUST_LOG=debug&#10;TZ=Asia/Shanghai"></textarea></div>
     <div class="chk">
       <label><input id="f_autostart" type="checkbox"> 自动启动</label>
@@ -285,10 +289,13 @@ function renderServices(list) {
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.textContent = [
+      s.group ? '[' + s.group + ']' : '',
+      s.priority ? 'P' + s.priority : '',
       s.state && s.state.pid ? 'PID ' + s.state.pid : '',
       'CPU ' + (s.metrics ? s.metrics.cpu_percent.toFixed(1) : '0.0') + '%',
       '内存 ' + (s.metrics ? Math.round(s.metrics.memory_kb / 1024) : 0) + ' MB',
       '重启 ' + s.restart_count,
+      (s.listening_ports || []).map(p => p.proto + ':' + p.local_port).join(' '),
     ].filter(Boolean).join(' · ');
 
     const acts = document.createElement('div');
@@ -477,10 +484,11 @@ function openForm(name) {
   editingName = name || null;
   document.getElementById('formErr').textContent = '';
   document.getElementById('formTitle').textContent = name ? '编辑服务:' + name : '新增服务';
-  ['f_name','f_command','f_args','f_workdir','f_encoding','f_env'].forEach(id => {
+  ['f_name','f_command','f_args','f_workdir','f_encoding','f_env','f_group'].forEach(id => {
     document.getElementById(id).value = '';
   });
   document.getElementById('f_graceful').value = '10';
+  document.getElementById('f_priority').value = '0';
   document.getElementById('f_autostart').checked = false;
   document.getElementById('f_autorestart').checked = false;
   if (name) {
@@ -493,6 +501,8 @@ function openForm(name) {
       document.getElementById('f_workdir').value = cfg.working_dir || '';
       document.getElementById('f_graceful').value = cfg.graceful_timeout_secs ?? 10;
       document.getElementById('f_encoding').value = cfg.output_encoding || '';
+      document.getElementById('f_group').value = cfg.group || '';
+      document.getElementById('f_priority').value = cfg.priority ?? 0;
       document.getElementById('f_env').value = Object.entries(cfg.environment || {}).map(([k,v]) => k + '=' + v).join('\n');
       document.getElementById('f_autostart').checked = !!cfg.auto_start;
       document.getElementById('f_autorestart').checked = !!cfg.auto_restart;
@@ -516,6 +526,8 @@ function submitForm() {
     working_dir: document.getElementById('f_workdir').value.trim() || null,
     graceful_timeout_secs: parseInt(document.getElementById('f_graceful').value) || 10,
     output_encoding: document.getElementById('f_encoding').value.trim() || null,
+    group: document.getElementById('f_group').value.trim() || null,
+    priority: parseInt(document.getElementById('f_priority').value) || 0,
     auto_start: document.getElementById('f_autostart').checked,
     auto_restart: document.getElementById('f_autorestart').checked,
     environment: {},

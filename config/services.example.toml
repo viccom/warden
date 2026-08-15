@@ -18,6 +18,7 @@ log_dir    = "./logs"                    # warden 自身日志目录
 # ── 1. rs-iot 主程序 ──────────────────────────────────────────
 # REST :8790 / lux :6390,工业 IoT 边缘网关核心。
 # 必须从部署根启动(scripts/data/logs 为 cwd 相对路径)。
+# priority:小者先启动、越后停止 → rs-iot(0)先于 reasonix(5)先于 gateway(10)。
 [[service]]
 name         = "rs-iot"
 display_name = "rs-iot 主程序"
@@ -25,6 +26,8 @@ description  = "REST :8790 / lux :6390"
 command      = "E:/rsiot-field/bin/rs-iot.exe"
 args         = ["--config", "config.toml"]
 working_dir  = "E:/rsiot-field"
+group        = "rs-iot-suite"
+priority     = 0
 auto_start   = true
 auto_restart = false
 # output_encoding = "gbk"   # 中文 Windows 控制台程序若中文日志丢失/乱码,设此项
@@ -40,6 +43,8 @@ description  = "AI Agent 后端 :8787,单会话(Go 官方单二进制)"
 command      = "E:/rsiot-field/bin/reasonix.exe"
 args         = ["serve", "-addr", "127.0.0.1:8787", "-auth", "token", "-token", "test-serve-token-123"]
 working_dir  = "E:/rsiot-field/work"
+group        = "rs-iot-suite"
+priority     = 5
 auto_start   = true
 auto_restart = false
 
@@ -52,5 +57,7 @@ description  = ":8080,嵌入前端 + 反代"
 command      = "E:/rsiot-field/bin/rsiot-gateway.exe"
 args         = ["gateway.toml"]
 working_dir  = "E:/rsiot-field"
+group        = "rs-iot-suite"
+priority     = 10
 auto_start   = true
 auto_restart = false

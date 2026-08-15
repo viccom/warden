@@ -2,9 +2,9 @@
 
 > **跨会话接续入口**:新会话先读本文件的「当前进度」,再按需查 [`DESIGN.md`](./DESIGN.md) 对应章节,然后从下一个 `[ ]` 步骤继续。每完成一步把 `[ ]` 改 `[x]` 并更新「最后更新」日期,必要时写「变更日志」。
 
-- **最后更新**:2026-08-14
-- **当前阶段**:Phase 2 收尾 + Web UI 雏形(Windows Service + 会话 0 graceful + GBK 解码 + 浏览器界面;36 测试绿 + clippy/fmt clean)
-- **下一步**:Phase 2 剩余(UAC 自提权 / CREATE_NO_WINDOW / systemd 实测 / SCM 错误码)或 Phase 4 Web 完善
+- **最后更新**:2026-08-15
+- **当前阶段**:增强两项落地(服务分组+优先级有序启停、监听端口发现);69 测试绿 + clippy/fmt clean
+- **下一步**:自升级(取舍讨论见 RESEARCH-SELF-UPDATE.md)或 Phase 2 剩余(systemd 实测 / SCM 错误码)/ Web 完善
 
 ---
 
@@ -81,6 +81,9 @@
 - [x] **健康检查完整实现 + 告警 ✅(2026-08-14)**:`supervisor/health.rs` 后台 task 按各服务 interval_secs TCP 探测;`HealthStatus`(status/last_error/consecutive_failures)进 ServiceStatus;迁移时 tracing warn + LogHub 推送 + 可选 `daemon.alert_webhook` POST(fire-and-forget)。`last_exit` 记录自然退出。e2e(真 TcpListener healthy→unhealthy 迁移 + 告警行)绿。
 - [x] **环境变量增强 ✅(2026-08-14)**:`[daemon] env` 全局注入(`apply_daemon_env` 烘入,service 同名 key 覆盖,幂等);CRUD 的 PUT 天然可改 environment;TUI 详情面板展示 KEY=VAL。单测 + 真实进程验证(cmd echo:GLOBAL_FLAG=from-service 覆盖 daemon 值 ✅)。
 - [ ] 鉴权升级 JWT + login(加 Web 时)
+- [x] **服务分组 + 启动优先级 ✅(2026-08-15)**:`[[service]]` 加 `group`(展示标签)/`priority`(小者先启动、越后停止,supervisord 方向语义,同值按 name 字典序)。`start_all`/`start_auto`/`start_desired` 有序 + **就绪推进**(逐个等到离开 Starting,15s 上限,Failed/Restarting 不阻塞);`stop_all` 逆序。`ServiceStatus`/CRUD/Web 表单/TUI/example 透出。e2e 用 stamp helper(进程真实执行序,非发起序)+ 失败不阻塞场景。方案与实施记录见 [PLAN-GROUP-PRIORITY-PORTS.md](./PLAN-GROUP-PRIORITY-PORTS.md)
+- [x] **子进程监听端口发现 ✅(2026-08-15)**:`supervisor/ports.rs`——netstat2 全表采集(Windows 零额外依赖)→ **服务 PID 子树过滤**(含孙进程,启动器形态不漏)→ TCP LISTEN/UDP 绑定入 `ServiceStatus.listening_ports`,metrics task 2s 周期刷新。e2e 双信源断言(helper 自报端口 vs OS 端口表)+ 孙进程场景。UDP 仅展示不支持健康检查;Linux 采集路径待 Linux runner(同 systemd 批次)
+- [ ] warden 自升级(技术调研完成,取舍待讨论,见 [RESEARCH-SELF-UPDATE.md](./RESEARCH-SELF-UPDATE.md);倾向 rs-selfupdater 引擎 + 服务管理器重启编排;有序 drain 复用本次 ordered_names)
 
 ---
 
@@ -97,3 +100,5 @@
 - **2026-08-14(Web UI 雏形 ✅)**:Phase 4 最小版前置。`GET /` 返回嵌入单页面(`include_str! web/index.html`,零新依赖),暗色双栏:服务列表(2s 刷新状态 + 行内 start/stop)+ 实时日志面板(SSE 订阅 `/logs/stream`,暂停/清空/自动滚动,stdout/stderr 分色)+ 可选 token(localStorage;配 token 时 `EventSource` 不能带 header → 降级 1.5s 轮询)。新增 `src/api/routes_ui.rs`(handler 返回 `Html`)+ auth 白名单加 `/`。日志用 `textContent` 渲染防 XSS。**自验证**:curl `/` 返回 `text/html`(浏览器渲染非纯文本);修复 JS 一处 bug(services 返回 `{services:[...]}` 非裸数组)。fmt + clippy + test(36)全绿。UI 视觉/交互待用户浏览器最终确认。
 - **2026-08-14(Ctrl-C 优雅退出修复 + 管理/监视全链路实测)**:用户实测发现前台 Ctrl-C 后 warden 以 0xC000013A 退出(未走 graceful)。根因两层:① tokio `ctrl_c()` 接收端在首次事件后 drop,再次 Ctrl-C 时 tokio handler 返回 FALSE → std 默认 handler `ExitProcess(0xC000013A)` 强杀;② SSE 长连接(浏览器 UI 挂着时)使 axum graceful shutdown 无限等待 → 进程卡住,用户再按 Ctrl-C 触发①。**修复**:`supervisor/signal.rs` 加 `install_console_shutdown`(Windows 自有 `SetConsoleCtrlHandler` 永久拦截 CTRL_C/CTRL_BREAK → 触发 shutdown;多次 Ctrl-C 都走 graceful);`lib.rs` serve 设 5s 强断上限(**从 shutdown 后起算**,曾误写成启动起算导致 daemon 5s 必退,已修正 + e2e 加"8s 不自杀"断言防护)。**测试**:+`tests/shutdown_e2e.rs`(SSE 挂着时 cancel 应限期退出 + 不自杀,绿);`tests/shutdown_console_e2e.rs`(真实 console 注入 CTRL_C 验退出码 0,**已 #[ignore] 待后期**:CREATE_NEW_CONSOLE 形态下 AttachConsole+GenerateConsoleCtrlEvent 对 warden 不可达,属测试环境 console 事件分发怪癖,修复本身已由 shutdown_e2e 覆盖)。37 测试绿 + clippy/fmt clean。**管理/监视全链路实测通过**:restart(PID 18164→5880)/ stop(→stopped)/ start(→running,新 PID)✅;监视 services 列表(状态/PID/CPU/内存/重启次数)+ logs 快照(GBK 中文正确)+ metrics 端点 ✅。Windows 日志显示类问题暂略,待后期。
 - **2026-08-14(Phase 4 增强 ✅)**:① **运行时 CRUD**:POST/PUT/DELETE `/api/v1/services`(校验复用 config::validate_service;运行中 409);持久化用 overlay `runtime_services.toml`(不动主配置,按 name 覆盖,build_state merge,重启恢复)。② **desired-state**:`desired_state.json`(name→bool),仅 API 显式操作写入(优雅停机 stop_all 不清),启动时 start_auto 后 start_desired 恢复。③ **健康检查 + 告警**:`supervisor/health.rs`(1s tick 调度,按服务 interval TCP 探测),HealthStatus(状态/连续失败/错误)进 ServiceStatus,迁移时 warn+LogHub+可选 webhook(`daemon.alert_webhook`,fire-and-forget);proc 退出记 last_exit。④ **环境变量**:`[daemon] env` 全局烘入(service 同名覆盖,幂等;config 单测),TUI 详情展示 KEY=VAL。⑤ **TUI 完善**:详情面板 health(色点+连续失败)/last_exit/environment,顶栏连接细化(断开·重连中+原因截断)。**验证**:46 测试全绿 + clippy/fmt clean;新增 tests/crud_desired_health_e2e.rs(CRUD 全路径/overlay 恢复/desired 落盘恢复/真端口健康迁移+告警行);手测 curl 全路径(create/409/delete/desired 落盘)+ 真实进程 env 覆盖验证(`cmd echo GLOBAL_FLAG=from-service`)✅。
+- **2026-08-15**:新增强调研与方案文档。① `docs/RESEARCH-SELF-UPDATE.md`:自升级技术调研(self_update / self-replace / axoupdater / rs-selfupdater / dylib 热重载对比;结论倾向 rs-selfupdater 引擎 + warden 编排 + SCM/systemd 重启,热升级不做,取舍待讨论)。② `docs/PLAN-GROUP-PRIORITY-PORTS.md`:服务分组+启动优先级、子进程端口发现两项需求的实施方案与 TDD 计划(决策点/测试矩阵/涉及文件已列,待确认后实施)。
+- **2026-08-15(增强两项 ✅)**:按 PLAN 文档 TDD 路径实施完成。① **分组+优先级**:`ServiceConfig` +`group`/`priority`(serde default,round-trip 单测保 CRUD 不丢);`ordered_names` + `start_ordered`(就绪推进,15s 上限)接入 start_all/start_auto/start_desired,stop_all 逆序;stamp_target helper 验证**真实执行序**(启动正序/停止逆序/失败不阻塞);ServiceStatus/CRUD/Web/TUI/example 全链路透出。② **端口发现**:`supervisor/ports.rs` 过滤核心(TCP 仅 LISTEN、UDP 绑定全留、输出确定性排序,7 单测)+ PID 子树 BFS(3 单测,防环/菱形)+ netstat2 采集(spawn_blocking,失败降级空表);metrics task 每 2s 刷新入 `ServiceStatus.listening_ports`;port_listener_target helper **双信源 e2e**(自报端口 vs OS 端口表一致,含孙进程场景)。新增依赖 netstat2 0.11(Windows 零传递依赖)。**测试 46→69 全绿,fmt/clippy clean**;Web UI 视觉待浏览器人工确认(仓库惯例)。

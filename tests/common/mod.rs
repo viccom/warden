@@ -4,6 +4,7 @@
 ///
 /// 直接调用 ping/sleep 而非 `cmd /c ping`:否则 stop 时 kill 的是 cmd,
 /// ping 作为孙子进程残留为孤儿(Phase 4 将用 Windows Job Object 杀整棵进程树解决)。
+#[allow(dead_code)] // 跨测试共享 helper,部分 target 不使用
 pub fn long_runner() -> (String, Vec<String>) {
     if cfg!(windows) {
         (

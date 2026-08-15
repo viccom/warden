@@ -388,6 +388,9 @@ mod tests {
             last_exit: None,
             auto_start: false,
             auto_restart: false,
+            group: None,
+            priority: 0,
+            listening_ports: Vec::new(),
             environment: Default::default(),
         }
     }

@@ -198,6 +198,19 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         }
         lines.push(Line::raw(format!("auto_start  {}", s.auto_start)));
         lines.push(Line::raw(format!("auto_restart {}", s.auto_restart)));
+        lines.push(Line::raw(format!(
+            "group/prio  {} / {}",
+            s.group.as_deref().unwrap_or("-"),
+            s.priority
+        )));
+        if !s.listening_ports.is_empty() {
+            let ports: Vec<String> = s
+                .listening_ports
+                .iter()
+                .map(|p| format!("{}:{}", p.proto, p.local_port))
+                .collect();
+            lines.push(Line::raw(format!("listen      {}", ports.join(" "))));
+        }
         lines.push(Line::raw(format!("restarts    {}", s.restart_count)));
         lines.push(Line::raw(format!(
             "cpu         {:.1}%",

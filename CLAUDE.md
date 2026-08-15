@@ -21,7 +21,7 @@ warden 是一个 **Rust 进程监护管理工具**(supervisord / pm2 风格的 s
 | `error.rs` | `WardenError`(thiserror + `#[non_exhaustive]` + `impl IntoResponse`)+ `WResult<T>` |
 | `model.rs` | `ServiceConfig` / `ProcState` / `RestartPolicy` / `HealthCheck` / `ProcMetrics` |
 | `logs.rs` | `LogHub`(VecDeque 环缓冲 2000 + broadcast 256 + 按日轮转文件) |
-| `supervisor/` | 监护引擎:`mod`(Supervisor + ProcHandle + ServiceStatus)+ `proc`(状态机/backoff/spawn/wait)+ `metrics`(sysinfo 采样) |
+| `supervisor/` | 监护引擎:`mod`(Supervisor + ProcHandle + ServiceStatus + 有序启停)+ `proc`(状态机/backoff/spawn/wait)+ `metrics`(sysinfo 采样)+ `ports`(监听端口发现:netstat2 采集 + PID 子树过滤) |
 | `api/` | axum `build_router` + token 鉴权中间件 + `routes_service`/`routes_logs`/`routes_health` + SSE |
 
 **技术栈**(对齐 rs-iot 版本栈,便于统一维护):tokio 1 / axum 0.8 / serde+toml / thiserror+anyhow / clap / tracing(+appender)/ dashmap / sysinfo。edition 2021, rust-version 1.81。Phase 2 起:`windows-service` / `encoding_rs`;Phase 3:`ratatui` / `reqwest`;Phase 4:`rust-embed`。

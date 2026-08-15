@@ -51,6 +51,13 @@ pub struct ServiceConfig {
     /// 不支持 UTF-16(其行内字节含 0x0A,无法按行切分)。
     #[serde(default)]
     pub output_encoding: Option<String>,
+    /// 分组标签(纯展示/批量操作预留,不参与排序;排序全局由 priority 决定)。
+    #[serde(default)]
+    pub group: Option<String>,
+    /// 启动优先级:数值越小越先启动、越后停止(对齐 supervisord 方向语义);
+    /// 同值按 name 字典序。缺省 0。
+    #[serde(default)]
+    pub priority: u32,
 }
 
 fn default_graceful_timeout_secs() -> u64 {

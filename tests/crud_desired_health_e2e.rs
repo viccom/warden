@@ -173,6 +173,49 @@ async fn crud_rejects_while_running() {
     let _ = std::fs::remove_dir_all(&data_dir);
 }
 
+/// group/priority 经 CRUD 写入 → 状态快照透出 → overlay 重建后不丢。
+#[tokio::test]
+async fn crud_group_priority_roundtrip() {
+    let data_dir = tmpdir("groupprio");
+    let state = build_state(base_cfg(0, &data_dir), None);
+    let (cmd, args) = common::long_runner();
+
+    let body = serde_json::json!({
+        "name": "grouped-svc",
+        "command": cmd,
+        "args": args,
+        "group": "edge",
+        "priority": 7,
+    });
+    let r = hit(&state, "POST", "/api/v1/services", Some(body)).await;
+    assert_eq!(r.status(), 200);
+
+    // 状态快照透出 group/priority(TUI/Web 列表用)
+    let r = hit(&state, "GET", "/api/v1/services/grouped-svc", None).await;
+    assert_eq!(r.status(), 200);
+    {
+        use axum::body::to_bytes;
+        let bytes = to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        let s: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(s["group"], "edge", "状态快照应含 group:{s}");
+        assert_eq!(s["priority"], 7, "状态快照应含 priority:{s}");
+    }
+
+    // 重建 state(daemon 重启模拟)后 overlay 恢复,group/priority 不丢
+    let state2 = build_state(base_cfg(0, &data_dir), None);
+    let r = hit(&state2, "GET", "/api/v1/services/grouped-svc/config", None).await;
+    assert_eq!(r.status(), 200);
+    {
+        use axum::body::to_bytes;
+        let bytes = to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        let cfg: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(cfg["group"], "edge", "重建后 config 应保留 group:{cfg}");
+        assert_eq!(cfg["priority"], 7, "重建后 config 应保留 priority:{cfg}");
+    }
+
+    let _ = std::fs::remove_dir_all(&data_dir);
+}
+
 /// desired-state:API start 写 true;重建 state(模拟重启)后 start_desired 恢复。
 #[tokio::test]
 async fn desired_state_persists_and_restores() {
@@ -261,6 +304,8 @@ health = {{ type = "tcp", host = "127.0.0.1", port = {hport}, timeout_ms = 500, 
             ui_url: None,
             graceful_timeout_secs: 2,
             output_encoding: None,
+            group: None,
+            priority: 0,
         });
         state.supervisor.start("h2").await.unwrap();
         state.supervisor.log_hub("h2").unwrap()

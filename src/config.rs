@@ -351,4 +351,44 @@ environment = { OVERRIDE = "service", OWN = "x" }
             Some("http://127.0.0.1:9/hook")
         );
     }
+
+    #[test]
+    fn parse_group_and_priority() {
+        let toml = r#"
+[[service]]
+name = "a"
+command = "/bin/true"
+group = "core"
+priority = 10
+"#;
+        let cfg = Config::parse(toml).unwrap();
+        assert_eq!(cfg.services[0].group.as_deref(), Some("core"));
+        assert_eq!(cfg.services[0].priority, 10);
+    }
+
+    #[test]
+    fn default_group_and_priority() {
+        let toml = "[[service]]\nname=\"a\"\ncommand=\"/bin/true\"\n";
+        let cfg = Config::parse(toml).unwrap();
+        assert_eq!(cfg.services[0].group, None, "group 缺省应为无分组");
+        assert_eq!(cfg.services[0].priority, 0, "priority 缺省应为 0(最先启动)");
+    }
+
+    #[test]
+    fn serialize_roundtrip_group_priority() {
+        // runtime overlay(persist_runtime)直接序列化 ServiceConfig,
+        // round-trip 不丢字段是 CRUD 重启恢复不丢配置的行为保障
+        let toml = r#"
+[[service]]
+name = "a"
+command = "/bin/true"
+group = "edge"
+priority = 7
+"#;
+        let cfg = Config::parse(toml).unwrap();
+        let s = toml::to_string(&cfg).unwrap();
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(back.services[0].group.as_deref(), Some("edge"));
+        assert_eq!(back.services[0].priority, 7);
+    }
 }

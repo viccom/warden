@@ -29,6 +29,15 @@ pub struct ServiceView {
     pub auto_start: bool,
     #[serde(default)]
     pub auto_restart: bool,
+    /// 分组标签(纯展示)。
+    #[serde(default)]
+    pub group: Option<String>,
+    /// 启动优先级(小者先启动、后停止)。
+    #[serde(default)]
+    pub priority: u32,
+    /// 监听端口快照(TCP LISTEN / UDP 绑定,含孙进程)。
+    #[serde(default)]
+    pub listening_ports: Vec<ListeningSocketView>,
     /// 环境变量(daemon 全局已烘入;详情面板展示)。
     #[serde(default)]
     pub environment: std::collections::HashMap<String, String>,
@@ -52,6 +61,17 @@ pub struct LastExitView {
     pub exit_code: Option<i32>,
     #[serde(default)]
     pub at: String,
+}
+
+/// 监听端口项(backend ListeningSocket)。
+#[derive(Clone, Deserialize, Debug)]
+pub struct ListeningSocketView {
+    #[serde(default)]
+    pub proto: String,
+    #[serde(default)]
+    pub local_addr: String,
+    #[serde(default)]
+    pub local_port: u16,
 }
 
 impl ServiceView {

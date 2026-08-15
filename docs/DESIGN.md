@@ -121,6 +121,8 @@ pub struct ServiceConfig {
     #[serde(default)] pub restart: RestartPolicy,
     #[serde(default)] pub health: Option<HealthCheck>,
     #[serde(default)] pub ui_url: Option<String>,
+    #[serde(default)] pub group: Option<String>,   // 分组标签(纯展示,不参与排序)
+    #[serde(default)] pub priority: u32,           // 启动优先级:小者先启动、越后停止;同值按 name 字典序
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -203,6 +205,8 @@ pub struct ProcMetrics {
 - **stop(Phase 1)**:`child.kill()`(Windows = TerminateProcess,强制终止)。优雅停止(Linux SIGTERM / Windows GenerateConsoleCtrlEvent / Job Object)列 **Phase 4**。
 - **日志接管**:spawn 后起两个 reader task,按行读 stdout/stderr → 推入该服务 `LogHub`(区分 stdout/stderr 标记)。
 - **metrics**:sysinfo 每 2s 按已记录的 PID 采 CPU/内存,写入 `ProcRuntime.metrics`。
+- **有序启停**:`start_all`/`start_auto`/`start_desired` 按 priority 升序(name 字典序 tie-break)启动 + **就绪推进**(每服务等到离开 Starting、上限 15s 再启动下一个,Failed/Restarting 不阻塞后续);`stop_all` 逆序(被依赖方最后停)。见 `Supervisor::ordered_names`/`start_ordered`。
+- **监听端口发现**(`supervisor/ports.rs`):metrics task 周期采集全系统 socket 表(netstat2,Windows GetExtendedTcp/UdpTable / Linux netlink)→ 按**服务 PID 子树**(含孙进程,启动器形态)过滤 TCP LISTEN / UDP 绑定 → 写入 `ProcInner.ports`,经 `ServiceStatus.listening_ports` 透出。UDP 仅"已绑定"语义(无 listen),不支持 UDP 健康检查。
 
 **并发模型**:Supervisor 持 `DashMap<String, ProcRuntime>`。状态读写用 `RwLock`/`Mutex` 保护最小临界区;长操作(spawn/wait/backoff sleep)在独立 tokio task,不阻塞 API 线程。这与 rs-iot 的 InstanceManager(states/handles/configs 多 DashMap)模式一致。
 

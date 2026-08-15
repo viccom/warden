@@ -31,6 +31,8 @@ fn service(name: &str, cmd: &str, args: Vec<String>) -> ServiceConfig {
         ui_url: None,
         graceful_timeout_secs: 1,
         output_encoding: None,
+        group: None,
+        priority: 0,
     }
 }
 
