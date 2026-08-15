@@ -34,6 +34,8 @@
          padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 14px;
          font-family: inherit; transition: background .15s; }
   .btn:hover { background: #30304a; }
+  .btn:disabled { opacity: .35; cursor: not-allowed; }
+  .btn:disabled:hover { background: var(--panel2); }
   .btn.primary { background: var(--blue); border-color: transparent; color: #0d1420; font-weight: 600; }
   .btn.primary:hover { background: #6fb3ff; }
   .btn.danger { background: transparent; border-color: var(--red); color: var(--red); }
@@ -77,6 +79,8 @@
   .svc .acts button { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
                       padding: 3px 10px; border-radius: 6px; cursor: pointer; font-size: 12.5px; font-family: inherit; }
   .svc .acts button:hover { border-color: var(--blue); color: var(--blue); }
+  .svc .acts button:disabled { opacity: .35; cursor: not-allowed; }
+  .svc .acts button:disabled:hover { border-color: var(--border); color: var(--text); }
   .svc .acts button.del:hover { border-color: var(--red); color: var(--red); }
   .empty { color: var(--muted); padding: 28px; text-align: center; font-size: 14px; }
 
@@ -141,6 +145,34 @@
            opacity: 0; transition: opacity .25s; z-index: 20; max-width: 80%; pointer-events: none; }
   #toast.show { opacity: 1; }
   #toast.err { background: var(--red); color: #160d10; border-color: transparent; font-weight: 600; }
+
+  /* 配置文件编辑器 */
+  .cfgmodal { width: min(760px, 92vw); }
+  .cfgfmt { font-size: 11px; background: var(--panel2); border: 1px solid var(--border); border-radius: 4px;
+            padding: 1px 8px; color: var(--sub); text-transform: uppercase; vertical-align: middle; }
+  .cfgpath { font-size: 12px; color: var(--sub); font-family: Consolas, monospace;
+             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cfgwarn { font-size: 12px; color: var(--yellow); }
+  .cfgwrap { position: relative; }
+  .cfgcode { height: 50vh; width: 100%; margin: 0; padding: 10px 12px; border: 1px solid var(--border);
+             border-radius: 8px; font-family: Consolas, "Cascadia Mono", monospace; font-size: 13px;
+             line-height: 1.5; white-space: pre; overflow: auto; tab-size: 2; background: var(--panel); }
+  .cfghl { position: absolute; inset: 0; pointer-events: none; border-color: transparent;
+           overflow: hidden; user-select: none; }
+  /* 覆盖 .modal textarea 的全局规则(特异性 0,1,1)——不透明背景会盖住着色层,
+     字体/字号/padding/行高必须与 .cfgcode 的 <pre> 完全一致(双层对齐) */
+  .modal textarea.cfgta { background: transparent; color: transparent; caret-color: var(--text);
+                          font-family: Consolas, "Cascadia Mono", monospace; font-size: 13px;
+                          line-height: 1.5; padding: 10px 12px; min-height: 0; }
+  .cfgta { position: relative; resize: vertical; color: transparent; caret-color: var(--text);
+           background: transparent; }
+  .cfghl .tk-com { color: #6b7385; font-style: italic; }
+  .cfghl .tk-str { color: #8fd18f; }
+  .cfghl .tk-key { color: #7fb3ff; }
+  .cfghl .tk-sec { color: var(--yellow); font-weight: 600; }
+  .cfghl .tk-num { color: #d9a0e0; }
+  .cfghl .tk-bool { color: #e0917f; }
+  .cfghint { margin-right: auto; font-size: 12px; color: var(--sub); }
 </style>
 </head>
 <body>
@@ -227,6 +259,28 @@
     <div class="actions">
       <button class="btn" onclick="closeForm()">取消</button>
       <button class="btn primary" onclick="submitForm()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 配置文件编辑器(与桌面版同款:语法着色 + toml/json 校验保存) -->
+<div class="overlay" id="cfgOverlay" style="display:none">
+  <div class="modal cfgmodal">
+    <h3>配置文件 · <span id="cfgSvc"></span> <span class="cfgfmt" id="cfgFmt"></span></h3>
+    <div class="cfgpath" id="cfgPath"></div>
+    <div class="cfgwarn" id="cfgWarn" style="display:none">文件尚不存在,保存后将创建</div>
+    <div class="cfgwrap">
+      <pre class="cfgcode cfghl" id="cfgHl" aria-hidden="true"></pre>
+      <textarea class="cfgcode cfgta" id="cfgTa" spellcheck="false" wrap="off"
+        oninput="cfgDirty = true; cfgRender()"
+        onscroll="cfgSyncScroll()" onkeydown="cfgOnKey(event)"></textarea>
+    </div>
+    <div class="err" id="cfgErr"></div>
+    <div class="actions">
+      <span class="cfghint" id="cfgHint"></span>
+      <button class="btn" onclick="closeConfigEditor()">关闭</button>
+      <button class="btn" onclick="saveConfigFile(false)">保存</button>
+      <button class="btn primary" id="cfgFmtBtn" onclick="saveConfigFile(true)">保存并格式化</button>
     </div>
   </div>
 </div>
@@ -382,14 +436,20 @@ function renderServices(list) {
     const b1 = document.createElement('button');
     b1.textContent = isRun ? '停止' : '启动';
     b1.onclick = (ev) => { ev.stopPropagation(); startStop(s.name, isRun ? 'stop' : 'start'); };
+    // 配置文件编辑(与桌面版同名按钮;未配置路径时禁用)
+    const bc = document.createElement('button');
+    bc.textContent = '配置';
+    bc.title = s.config_file ? '编辑配置文件 ' + s.config_file : '未配置配置文件(在「属性」中填写路径)';
+    if (!s.config_file) bc.disabled = true;
+    bc.onclick = (ev) => { ev.stopPropagation(); openConfigEditor(s.name); };
     const b2 = document.createElement('button');
-    b2.textContent = '编辑';
+    b2.textContent = '属性';
     b2.onclick = (ev) => { ev.stopPropagation(); openForm(s.name); };
     const b3 = document.createElement('button');
     b3.className = 'del';
     b3.textContent = '删除';
     b3.onclick = (ev) => { ev.stopPropagation(); deleteService(s.name); };
-    acts.append(b1, b2, b3);
+    acts.append(b1, bc, b2, b3);
 
     row.append(top, meta, acts);
     box.appendChild(row);
@@ -675,6 +735,95 @@ function deleteService(name) {
       loadServices();
     })
     .catch(e => showToast('删除失败:' + e.message, true));
+}
+
+// ── 配置文件编辑器(与桌面版同款能力:着色/校验保存/格式化)─────────
+let cfgName = null;       // 正在编辑的服务名
+let cfgDirty = false;
+let cfgFormattable = false;
+const CFG_HL_LIMIT = 200 * 1024;
+
+function cfgEsc(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+// toml/yaml/ini/json 公共语法着色:字符串 → 注释 → 节 → 行首键 → 数字 → 布尔
+const CFG_TOKEN_RE = /("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')|(#[^\n]*|;[^\n]*)|(^\s*\[[^\]\n]*\])|(^[ \t]*[\w.$-]+(?=[ \t]*[:=]))|(\b\d+(?:\.\d+)?\b)|(\b(?:true|false|null|yes|no|on|off)\b)/gm;
+function cfgHighlight(text) {
+  if (text.length > CFG_HL_LIMIT) return cfgEsc(text);
+  let out = '', last = 0, m;
+  CFG_TOKEN_RE.lastIndex = 0;
+  while ((m = CFG_TOKEN_RE.exec(text))) {
+    out += cfgEsc(text.slice(last, m.index));
+    const cls = m[1] ? 'tk-str' : m[2] ? 'tk-com' : m[3] ? 'tk-sec' : m[4] ? 'tk-key' : m[5] ? 'tk-num' : 'tk-bool';
+    out += '<span class="' + cls + '">' + cfgEsc(m[0]) + '</span>';
+    last = m.index + m[0].length;
+  }
+  return out + cfgEsc(text.slice(last));
+}
+function cfgRender() {
+  document.getElementById('cfgHl').innerHTML = cfgHighlight(document.getElementById('cfgTa').value);
+}
+function cfgSyncScroll() {
+  const hl = document.getElementById('cfgHl'), ta = document.getElementById('cfgTa');
+  hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft;
+}
+function cfgOnKey(e) {
+  if (e.key === 'Tab') { // Tab 插入两空格,不跳出输入框
+    e.preventDefault();
+    const el = e.target, s = el.selectionStart, en = el.selectionEnd;
+    el.value = el.value.slice(0, s) + '  ' + el.value.slice(en);
+    el.selectionStart = el.selectionEnd = s + 2;
+    cfgDirty = true; cfgRender();
+  }
+}
+function openConfigEditor(name) {
+  cfgName = name; cfgDirty = false;
+  document.getElementById('cfgSvc').textContent = name;
+  document.getElementById('cfgErr').textContent = '';
+  document.getElementById('cfgWarn').style.display = 'none';
+  document.getElementById('cfgTa').value = '';
+  cfgRender();
+  document.getElementById('cfgOverlay').style.display = 'flex';
+  api('/api/v1/services/' + enc(name) + '/config-file').then(d => {
+    document.getElementById('cfgPath').textContent = d.path;
+    document.getElementById('cfgFmt').textContent = d.format;
+    cfgFormattable = d.format === 'toml' || d.format === 'json';
+    document.getElementById('cfgFmtBtn').style.display = cfgFormattable ? '' : 'none';
+    document.getElementById('cfgHint').textContent = cfgFormattable ? '' : '该格式不做语法校验,按纯文本保存';
+    document.getElementById('cfgWarn').style.display = d.exists ? 'none' : '';
+    document.getElementById('cfgTa').value = d.content || '';
+    cfgRender();
+  }).catch(e => {
+    document.getElementById('cfgErr').textContent = '读取失败:' + e.message;
+  });
+}
+function closeConfigEditor() {
+  if (cfgDirty && !confirm('有未保存的修改,确认关闭?')) return;
+  document.getElementById('cfgOverlay').style.display = 'none';
+  cfgName = null;
+}
+async function saveConfigFile(doFormat) {
+  if (!cfgName) return;
+  document.getElementById('cfgErr').textContent = '';
+  try {
+    const r = await fetch('/api/v1/services/' + enc(cfgName) + '/config-file', {
+      method: 'PUT',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      body: JSON.stringify({ content: document.getElementById('cfgTa').value, format: doFormat }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.message || ('HTTP ' + r.status));
+    cfgDirty = false;
+    if (doFormat) { // 回读格式化后的内容展示
+      const d = await api('/api/v1/services/' + enc(cfgName) + '/config-file');
+      document.getElementById('cfgTa').value = d.content || '';
+      cfgRender();
+    }
+    document.getElementById('cfgWarn').style.display = 'none';
+    showToast('已保存:' + cfgName + ' 配置文件');
+  } catch (e) {
+    document.getElementById('cfgErr').textContent = '保存失败:' + e.message;
+  }
 }
 
 // ── toast ────────────────────────────────────────────
