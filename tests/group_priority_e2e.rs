@@ -190,3 +190,70 @@ async fn start_all_continues_after_failure() {
     assert_eq!(read_stamps(&stamp), vec!["start:slow"]);
     let _ = std::fs::remove_file(&stamp);
 }
+
+fn stamp_svc_in_group(
+    name: &str,
+    priority: u32,
+    group: Option<&str>,
+    stamp: &std::path::Path,
+) -> ServiceConfig {
+    ServiceConfig {
+        group: group.map(String::from),
+        ..stamp_svc(name, priority, stamp)
+    }
+}
+
+/// 意图:组级启停只作用于该组;组内仍按优先级启动、逆序停止;其他组不受影响。
+#[tokio::test]
+async fn group_start_stop_scopes_to_group() {
+    let stamp = stamp_path("group");
+    let _ = std::fs::remove_file(&stamp);
+    let sv = supervisor_with(vec![
+        stamp_svc_in_group("web-a", 10, Some("web"), &stamp),
+        stamp_svc_in_group("web-b", 0, Some("web"), &stamp),
+        stamp_svc_in_group("db-1", 5, Some("db"), &stamp),
+    ]);
+
+    // 启动 web 组:组内优先级序(web-b→web-a),db 组不动
+    let started = sv.start_group("web").await;
+    assert_eq!(started, vec!["web-b", "web-a"]);
+    wait_for_state(&sv, "web-b", "running", Duration::from_secs(10)).await;
+    wait_for_state(&sv, "web-a", "running", Duration::from_secs(10)).await;
+    assert_eq!(sv.status("db-1").unwrap().state.name(), "stopped");
+
+    // 再启动 db 组
+    sv.start_group("db").await;
+    wait_for_state(&sv, "db-1", "running", Duration::from_secs(10)).await;
+
+    // 停止 web 组:逆序(web-a→web-b),db 仍在跑
+    let stopped = sv.stop_group("web").await;
+    assert_eq!(stopped, vec!["web-a", "web-b"]);
+    wait_for_state(&sv, "web-a", "stopped", Duration::from_secs(10)).await;
+    wait_for_state(&sv, "web-b", "stopped", Duration::from_secs(10)).await;
+    assert!(sv.status("db-1").unwrap().state.is_running());
+
+    let all = read_stamps(&stamp);
+    let web_starts: Vec<&str> = all
+        .iter()
+        .filter(|l| l.starts_with("start:web"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        web_starts,
+        vec!["start:web-b", "start:web-a"],
+        "组内启动应按优先序:{all:?}"
+    );
+    let web_stops: Vec<&str> = all
+        .iter()
+        .filter(|l| l.starts_with("stop:web"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        web_stops,
+        vec!["stop:web-a", "stop:web-b"],
+        "组内停止应逆序:{all:?}"
+    );
+
+    sv.stop_all().await;
+    let _ = std::fs::remove_file(&stamp);
+}

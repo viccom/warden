@@ -145,6 +145,37 @@ impl Supervisor {
         names.into_iter().map(|(n, _)| n).collect()
     }
 
+    /// 按启动/停止顺序返回指定组的服务名(组不存在返回空)。
+    pub fn names_in_group(&self, reverse: bool, group: &str) -> Vec<String> {
+        self.ordered_names(reverse)
+            .into_iter()
+            .filter(|n| {
+                self.get(n)
+                    .map(|h| h.config.group.as_deref() == Some(group))
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    /// 启动指定组的全部服务(按优先级顺序 + 就绪推进),返回实际启动的服务名。
+    pub async fn start_group(&self, group: &str) -> Vec<String> {
+        let names = self.names_in_group(false, group);
+        for n in &names {
+            let _ = self.start(n).await;
+            self.wait_started(n).await;
+        }
+        names
+    }
+
+    /// 停止指定组的全部服务(逆序,被依赖方最后停),返回实际停止的服务名。
+    pub async fn stop_group(&self, group: &str) -> Vec<String> {
+        let names = self.names_in_group(true, group);
+        for n in &names {
+            let _ = self.stop(n).await;
+        }
+        names
+    }
+
     /// 启动所有服务(按优先级顺序 + 就绪推进)。
     pub async fn start_all(&self) {
         self.start_ordered(|_| true).await;
@@ -499,5 +530,25 @@ mod tests {
         sv.add(svc("b", 10));
         sv.add(svc("c", 10));
         assert_eq!(sv.ordered_names(true), vec!["a", "c", "b"]);
+    }
+
+    fn svc_in_group(name: &str, priority: u32, group: Option<&str>) -> ServiceConfig {
+        ServiceConfig {
+            group: group.map(String::from),
+            ..svc(name, priority)
+        }
+    }
+
+    /// 意图:组级启停只作用于该组,且组内仍按优先级序(启动正序/停止逆序)。
+    #[test]
+    fn group_filter_keeps_priority_order_within_group() {
+        let sv = Supervisor::new(PathBuf::from(""));
+        sv.add(svc_in_group("a", 20, Some("g1")));
+        sv.add(svc_in_group("b", 10, Some("g2")));
+        sv.add(svc_in_group("c", 10, Some("g1")));
+        sv.add(svc_in_group("d", 0, None)); // 未分组,不属于任何组
+        assert_eq!(sv.names_in_group(false, "g1"), vec!["c", "a"]);
+        assert_eq!(sv.names_in_group(true, "g1"), vec!["a", "c"]);
+        assert!(sv.names_in_group(false, "no-such").is_empty());
     }
 }

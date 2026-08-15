@@ -236,3 +236,128 @@ async fn auth_accepts_with_correct_token_and_health_is_public() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+/// 意图:组级启停端点按组作用(组内优先级序),desired-state 随组操作同步。
+#[tokio::test]
+async fn group_routes_start_and_stop_scoped() {
+    let (cmd, args) = common::long_runner();
+    let web = |name: &str| ServiceConfig {
+        group: Some("web".into()),
+        ..service(name, &cmd, args.clone())
+    };
+    let (app, sv) = app_with(
+        vec![web("w1"), web("w2"), service("other", &cmd, args)],
+        None,
+    );
+
+    // 组启动
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/groups/web/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "组启动应 200");
+    wait_running(&sv, "w1").await;
+    wait_running(&sv, "w2").await;
+    assert!(
+        !sv.status("other").unwrap().state.is_running(),
+        "组外服务不应被拉起"
+    );
+
+    // 组停止
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/groups/web/stop")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "组停止应 200");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let both_stopped = ["w1", "w2"]
+            .iter()
+            .all(|n| sv.status(n).map(|s| !s.state.is_running()).unwrap_or(false));
+        if both_stopped {
+            break;
+        }
+        assert!(Instant::now() < deadline, "组服务未全部停止");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// 意图:桌面版(Tauri webview,origin http://tauri.localhost)跨域访问 API 不能被 CORS 拦截;
+/// 仅放行 Tauri 相关 origin(桌面 webview/dev server),不开放任意来源。
+#[tokio::test]
+async fn cors_allows_tauri_webview_origin_only() {
+    let (app, _sv) = app_with(vec![], None);
+
+    // 预检(preflight):tauri.localhost 应被放行并回显 origin
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/api/v1/services")
+                .header("origin", "http://tauri.localhost")
+                .header("access-control-request-method", "GET")
+                .header("access-control-request-headers", "authorization")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "预检应 200");
+    assert_eq!(
+        resp.headers().get("access-control-allow-origin").unwrap(),
+        "http://tauri.localhost"
+    );
+
+    // 实际 GET 带 origin:响应回显 allow-origin(浏览器侧才放行读取)
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/health")
+                .header("origin", "http://tauri.localhost")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get("access-control-allow-origin").unwrap(),
+        "http://tauri.localhost"
+    );
+
+    // 未知 origin:不回显(浏览器仍拦),且请求本体不受影响(非浏览器客户端无 origin 语义)
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/health")
+                .header("origin", "http://evil.example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "未知 origin 请求本体仍正常处理"
+    );
+    assert!(
+        resp.headers().get("access-control-allow-origin").is_none(),
+        "未知 origin 不应回显 allow-origin"
+    );
+}

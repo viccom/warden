@@ -85,6 +85,15 @@ pub fn validate_service(svc: &ServiceConfig, seen: &mut HashSet<String>) -> Resu
     if svc.command.trim().is_empty() {
         return Err(format!("service '{}' 的 command 为空", svc.name));
     }
+    // 组名用于组级 API 路径参数(/api/v1/groups/{group}/start),含 '/' 会破坏路由
+    if let Some(g) = &svc.group {
+        if g.contains('/') {
+            return Err(format!(
+                "service '{}' 的 group '{g}' 含禁用字符 '/'",
+                svc.name
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -390,5 +399,24 @@ priority = 7
         let back: Config = toml::from_str(&s).unwrap();
         assert_eq!(back.services[0].group.as_deref(), Some("edge"));
         assert_eq!(back.services[0].priority, 7);
+    }
+
+    #[test]
+    fn skips_group_with_path_separator() {
+        // 组名用于组级 API 路径参数(/api/v1/groups/{group}/start),含 '/' 会破坏路由
+        let toml = r#"
+[[service]]
+name = "a"
+command = "/bin/true"
+group = "web/ui"
+
+[[service]]
+name = "b"
+command = "/bin/true"
+group = "web"
+"#;
+        let cfg = Config::parse(toml).unwrap();
+        assert_eq!(cfg.services.len(), 1, "含 '/' 的组名应整项跳过");
+        assert_eq!(cfg.services[0].name, "b");
     }
 }

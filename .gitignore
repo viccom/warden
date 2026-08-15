@@ -4,3 +4,8 @@
 *.log
 *.rs.bk
 /.zcode
+
+# 桌面版(Tauri)前端构建产物与依赖
+/desktop/node_modules
+/desktop/dist
+/desktop/src-tauri/gen/schemas

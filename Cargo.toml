@@ -9,6 +9,11 @@ description = "A process supervisor daemon (supervisord/pm2-style) for the edge"
 repository = "https://github.com/viccom/warden"
 readme = "README.md"
 
+# 桌面版(Tauri 2)是 workspace 成员;根命令(cargo build/test)默认仍只作用于本 crate。
+# 桌面版构建:cd desktop && pnpm tauri build(或 cargo build -p warden-desktop)
+[workspace]
+members = ["desktop/src-tauri"]
+
 [lib]
 name = "warden"
 path = "src/lib.rs"

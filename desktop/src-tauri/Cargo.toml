@@ -1,0 +1,27 @@
+[package]
+name = "warden-desktop"
+version = "0.1.0"
+description = "warden 桌面版(多节点进程监护管理)"
+authors = ["viccom"]
+edition = "2021"
+
+[lib]
+# `_lib` 后缀避免与 bin 名冲突(Windows 限制,见 rust-lang/cargo#8519)
+name = "warden_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# 复用 CLI 版监护引擎/HTTP API(与本 crate 同仓库)
+warden = { path = "../.." }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "signal"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+axum = "0.8"
+getrandom = "0.3"

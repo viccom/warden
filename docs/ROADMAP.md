@@ -3,8 +3,8 @@
 > **跨会话接续入口**:新会话先读本文件的「当前进度」,再按需查 [`DESIGN.md`](./DESIGN.md) 对应章节,然后从下一个 `[ ]` 步骤继续。每完成一步把 `[ ]` 改 `[x]` 并更新「最后更新」日期,必要时写「变更日志」。
 
 - **最后更新**:2026-08-15
-- **当前阶段**:增强两项落地(服务分组+优先级有序启停、监听端口发现);69 测试绿 + clippy/fmt clean
-- **下一步**:自升级(取舍讨论见 RESEARCH-SELF-UPDATE.md)或 Phase 2 剩余(systemd 实测 / SCM 错误码)/ Web 完善
+- **当前阶段**:Phase 5 桌面版 P1 完成(组级 API + Tauri 2 多节点桌面端);warden 78 测试绿 + clippy/fmt clean
+- **下一步**:桌面版 P2(metrics 图表/系统通知/自动发现)或自升级(取舍讨论见 RESEARCH-SELF-UPDATE.md)或 Phase 2 剩余(systemd 实测)
 
 ---
 
@@ -87,6 +87,18 @@
 
 ---
 
+## Phase 5 —— 桌面版(Tauri 2,多节点管理)
+
+> 方案见 [PLAN-DESKTOP.md](./PLAN-DESKTOP.md)。复用 warden lib(path 依赖),前端 Vue 3 重写;本地节点(内嵌 daemon,随机端口)+ 远程节点(nodes.json)统一走 HTTP API。
+
+- [x] daemon 组级启停 API ✅(2026-08-15):`POST /api/v1/groups/{group}/start|stop`(复用 start_ordered 就绪推进/逆序停止,desired 同步;组名禁 `/`)。+4 测试(单测/组 e2e/路由/校验)
+- [x] workspace 改造 + Tauri 脚手架 ✅(2026-08-15):根 Cargo.toml 追加 [workspace](root 命令行为不变),desktop/src-tauri(crate warden-desktop,path 依赖 warden)+ desktop/src(Vue3+Vite)
+- [x] Rust 桌面端 ✅(2026-08-15):单实例插件 + 内嵌 daemon(127.0.0.1 随机端口+随机 token,data/log 目录与 CLI 隔离)+ 托盘(关闭最小化/托盘退出=逆序优雅停全部子进程)+ nodes.json 节点命令
+- [x] Vue 前端 ✅(2026-08-15):节点侧栏(内嵌自动+远程添加/删除)/服务卡片(状态/健康/组/优先级/端口/CPU/内存)/组过滤 chips+组级启停/日志 SSE(token 节点轮询降级)/CRUD 表单/暗色主题
+- [x] 验证 + 演示 ✅(2026-08-15):release 构建(5m)通过;WARDEN_CONFIG 注入三件套,内嵌 daemon 按优先级拉起,托盘/窗口行为正常。P2 待做:metrics 图表/系统通知/自动发现/开机自启
+
+---
+
 ## 变更日志
 
 - **2026-08-14**:仓库初始化。完成 Phase 1 第 0 步(脚手架 + DESIGN.md + ROADMAP.md + services.example.toml)。技术栈对齐 rs-iot,架构定为自带监护 + daemon 自注册 OS 服务(P2)。
@@ -102,3 +114,5 @@
 - **2026-08-14(Phase 4 增强 ✅)**:① **运行时 CRUD**:POST/PUT/DELETE `/api/v1/services`(校验复用 config::validate_service;运行中 409);持久化用 overlay `runtime_services.toml`(不动主配置,按 name 覆盖,build_state merge,重启恢复)。② **desired-state**:`desired_state.json`(name→bool),仅 API 显式操作写入(优雅停机 stop_all 不清),启动时 start_auto 后 start_desired 恢复。③ **健康检查 + 告警**:`supervisor/health.rs`(1s tick 调度,按服务 interval TCP 探测),HealthStatus(状态/连续失败/错误)进 ServiceStatus,迁移时 warn+LogHub+可选 webhook(`daemon.alert_webhook`,fire-and-forget);proc 退出记 last_exit。④ **环境变量**:`[daemon] env` 全局烘入(service 同名覆盖,幂等;config 单测),TUI 详情展示 KEY=VAL。⑤ **TUI 完善**:详情面板 health(色点+连续失败)/last_exit/environment,顶栏连接细化(断开·重连中+原因截断)。**验证**:46 测试全绿 + clippy/fmt clean;新增 tests/crud_desired_health_e2e.rs(CRUD 全路径/overlay 恢复/desired 落盘恢复/真端口健康迁移+告警行);手测 curl 全路径(create/409/delete/desired 落盘)+ 真实进程 env 覆盖验证(`cmd echo GLOBAL_FLAG=from-service`)✅。
 - **2026-08-15**:新增强调研与方案文档。① `docs/RESEARCH-SELF-UPDATE.md`:自升级技术调研(self_update / self-replace / axoupdater / rs-selfupdater / dylib 热重载对比;结论倾向 rs-selfupdater 引擎 + warden 编排 + SCM/systemd 重启,热升级不做,取舍待讨论)。② `docs/PLAN-GROUP-PRIORITY-PORTS.md`:服务分组+启动优先级、子进程端口发现两项需求的实施方案与 TDD 计划(决策点/测试矩阵/涉及文件已列,待确认后实施)。
 - **2026-08-15(增强两项 ✅)**:按 PLAN 文档 TDD 路径实施完成。① **分组+优先级**:`ServiceConfig` +`group`/`priority`(serde default,round-trip 单测保 CRUD 不丢);`ordered_names` + `start_ordered`(就绪推进,15s 上限)接入 start_all/start_auto/start_desired,stop_all 逆序;stamp_target helper 验证**真实执行序**(启动正序/停止逆序/失败不阻塞);ServiceStatus/CRUD/Web/TUI/example 全链路透出。② **端口发现**:`supervisor/ports.rs` 过滤核心(TCP 仅 LISTEN、UDP 绑定全留、输出确定性排序,7 单测)+ PID 子树 BFS(3 单测,防环/菱形)+ netstat2 采集(spawn_blocking,失败降级空表);metrics task 每 2s 刷新入 `ServiceStatus.listening_ports`;port_listener_target helper **双信源 e2e**(自报端口 vs OS 端口表一致,含孙进程场景)。新增依赖 netstat2 0.11(Windows 零传递依赖)。**测试 46→69 全绿,fmt/clippy clean**;Web UI 视觉待浏览器人工确认(仓库惯例)。
+- **2026-08-15(Phase 5 桌面版 P1 ✅)**:按 PLAN-DESKTOP.md 实施。① 组级启停 API(names_in_group/start_group/stop_group + 路由,组名禁 '/',+4 测试,74 全绿)。② Tauri 2 桌面版:workspace 改造(root 命令不变);warden-desktop crate path 复用 warden;内嵌 daemon(127.0.0.1 随机端口+getrandom token,data/log 与 CLI 隔离);单实例/托盘(关闭最小化,托盘退出=逆序优雅停全部子进程+5s drain);nodes.json 远程节点注册。③ Vue3+Vite 前端(gzip 34KB):节点栏/服务卡片/组 chips+组级启停/日志 SSE(token 轮询降级)/CRUD。④ release 构建通过,WARDEN_CONFIG 注入三件套实测按优先级拉起。P2:metrics 图表/系统通知/自动发现/开机自启。
+- **2026-08-15(桌面版关键修复:CORS + UI 偏好)**:用户实测发现桌面版页面看不到服务——根因:Tauri 页面 origin(http://tauri.localhost)→ 内嵌 API(127.0.0.1 随机端口)是**跨域请求**,warden API 无 CORS 层被 WebView2 拦截(监护链路本身正常,三件套由内嵌 daemon 拉起)。修复:`build_router` 加 `tauri_cors()`(仅放行 http://tauri.localhost / tauri://localhost / http://localhost:1420 dev 三个 origin,不开放任意来源;CORS 层在鉴权外层,预检不进鉴权)。TDD:api_flow +1 测试(预检放行/GET 回显/未知 origin 不回显),curl 真实 daemon 端到端验证;74 测试全绿。另:UI 偏好(节点/组过滤)持久化到 localStorage(带失效回退),远程节点注册表维持 nodes.json(资产后端持有,与用户讨论结论)。

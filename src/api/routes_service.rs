@@ -80,6 +80,34 @@ pub async fn stop_all(State(st): State<AppState>) -> impl IntoResponse {
     Json(json!({ "status": "stop-all done" }))
 }
 
+/// 组级启动:组内按优先级序 + 就绪推进;desired 随组操作同步。
+pub async fn group_start(
+    State(st): State<AppState>,
+    Path(group): Path<String>,
+) -> WResult<impl IntoResponse> {
+    let names = st.supervisor.start_group(&group).await;
+    for n in &names {
+        st.supervisor.set_desired(n, true);
+    }
+    Ok(Json(
+        json!({ "status": "group-start done", "group": group, "services": names }),
+    ))
+}
+
+/// 组级停止:组内逆序(被依赖方最后停);desired 随组操作同步。
+pub async fn group_stop(
+    State(st): State<AppState>,
+    Path(group): Path<String>,
+) -> WResult<impl IntoResponse> {
+    let names = st.supervisor.stop_group(&group).await;
+    for n in &names {
+        st.supervisor.set_desired(n, false);
+    }
+    Ok(Json(
+        json!({ "status": "group-stop done", "group": group, "services": names }),
+    ))
+}
+
 // ── 运行时 CRUD ────────────────────────────────────────────────
 
 /// 新增服务:body = ServiceConfig JSON。校验后注册(不启动)+ 落盘 overlay。

@@ -107,6 +107,25 @@ pub fn persist_runtime(state: &AppState) {
     }
 }
 
+/// 桌面版(Tauri webview)跨域访问白名单:仅放行 Tauri 相关 origin,不开放任意来源
+/// (防浏览器端任意页面打无 token 的本地 daemon)。
+/// - `http://tauri.localhost`:Windows WebView2 的页面 origin
+/// - `tauri://localhost`:macOS/Linux webview
+/// - `http://localhost:1420`:桌面版 `tauri dev`(vite dev server)
+fn tauri_cors() -> tower_http::cors::CorsLayer {
+    use axum::http::{header, Method};
+    use tower_http::cors::CorsLayer;
+    let origins = [
+        "http://tauri.localhost".parse().unwrap(),
+        "tauri://localhost".parse().unwrap(),
+        "http://localhost:1420".parse().unwrap(),
+    ];
+    CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+}
+
 pub fn build_router(state: AppState) -> Router {
     use axum::routing::{delete, get, post, put};
     Router::new()
@@ -119,6 +138,14 @@ pub fn build_router(state: AppState) -> Router {
             post(routes_service::start_all),
         )
         .route("/api/v1/services/stop-all", post(routes_service::stop_all))
+        .route(
+            "/api/v1/groups/{group}/start",
+            post(routes_service::group_start),
+        )
+        .route(
+            "/api/v1/groups/{group}/stop",
+            post(routes_service::group_stop),
+        )
         .route("/api/v1/services/{name}", get(routes_service::get_one))
         .route("/api/v1/services/{name}", put(routes_service::update))
         .route("/api/v1/services/{name}", delete(routes_service::delete))
@@ -146,6 +173,8 @@ pub fn build_router(state: AppState) -> Router {
             state.clone(),
             auth::auth_middleware,
         ))
+        // CORS 在 auth 外层:预检(OPTIONS)由 CORS 直接应答,不进鉴权
+        .layer(tauri_cors())
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
 }
