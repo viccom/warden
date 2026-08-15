@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue';
-import { store, refresh } from '../store';
-import { clientFor, showToast, tokenOf } from '../api';
+import { store, refresh, tokenOf } from '../store';
+import { clientFor, showToast } from '../api';
 
 const form = store.serviceForm; // {mode, nodeUrl, name?}
 

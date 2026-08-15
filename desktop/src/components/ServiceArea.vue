@@ -1,8 +1,8 @@
 <script setup>
 import { computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { store, visibleServices, groupsOfVisible, groupAction, serviceAction } from '../store';
-import { clientFor, showToast, tokenOf } from '../api';
+import { store, visibleServices, groupsOfVisible, groupAction, serviceAction, tokenOf } from '../store';
+import { clientFor, showToast } from '../api';
 
 const groups = computed(() => groupsOfVisible());
 const services = computed(() => visibleServices());

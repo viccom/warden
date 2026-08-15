@@ -1,13 +1,5 @@
 // 每节点 HTTP 客户端:统一覆盖本地内嵌节点与远程节点(CLI 版 warden API)。
 
-import { store } from './store';
-
-/// 取节点 token(内嵌节点走 store.local,远程走 store.nodes)。
-export function tokenOf(url) {
-  if (store.local && store.local.url === url) return store.local.token;
-  return store.nodes.find(n => n.url === url)?.token || '';
-}
-
 export function clientFor(node) {
   const base = String(node.url || '').replace(/\/+$/, '');
   const auth = node.token ? { Authorization: 'Bearer ' + node.token } : {};

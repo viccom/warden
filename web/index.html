@@ -301,6 +301,10 @@ function renderGroupbar() {
   bar.innerHTML = '';
   const counts = new Map();
   for (const s of currentList) if (s.group) counts.set(s.group, (counts.get(s.group) || 0) + 1);
+  // 失效回退:过滤的组已不存在(服务被删/改名)时回「全部」,避免空列表无提示
+  if (groupFilter !== 'ALL' && groupFilter !== 'UNGROUPED' && !counts.has(groupFilter)) {
+    groupFilter = 'ALL';
+  }
   const chips = [{ key: 'ALL', label: '全部', count: currentList.length },
                  { key: 'UNGROUPED', label: '未分组', count: currentList.filter(s => !s.group).length },
                  ...[...counts.entries()].map(([g, c]) => ({ key: g, label: g, count: c }))];

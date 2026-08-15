@@ -1,8 +1,8 @@
 <script setup>
 // 配置文件编辑器:读/写节点侧 config-file API(toml/json 保存前校验,可格式化)。
 import { ref, computed, onMounted } from 'vue';
-import { store } from '../store';
-import { clientFor, showToast, tokenOf } from '../api';
+import { store, tokenOf } from '../store';
+import { clientFor, showToast } from '../api';
 
 const form = store.configEditor; // {nodeUrl, name}
 

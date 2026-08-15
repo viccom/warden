@@ -56,6 +56,12 @@ async function refreshOnce() {
   store.services = next;
 }
 
+/// 取节点 token(内嵌节点走 local,远程走 nodes)。放 store 避免 api↔store 循环依赖。
+export function tokenOf(url) {
+  if (store.local && store.local.url === url) return store.local.token;
+  return store.nodes.find(n => n.url === url)?.token || '';
+}
+
 export async function refresh() {
   return refreshOnce();
 }
