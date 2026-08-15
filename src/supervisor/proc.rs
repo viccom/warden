@@ -249,7 +249,13 @@ async fn pipe_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                 }
                 let (text, _, _) = encoding.decode(&buf[..end]);
                 if !text.is_empty() {
-                    log.push(kind, detect_level(&text), text.into_owned());
+                    // 剥离 ANSI 转义序列(被监护程序常输出彩色日志;LogHub 按纯文本
+                    // 存储/展示,ANSI 码会显示为乱码)。tracing 风格的 [32m 等即属此类。
+                    let text = strip_ansi_escapes::strip_str(&text);
+                    if !text.is_empty() {
+                        let level = detect_level(&text);
+                        log.push(kind, level, text);
+                    }
                 }
             }
             Err(_) => break,
@@ -341,6 +347,28 @@ mod tests {
         assert_eq!(snap.len(), 2);
         assert_eq!(snap[0].text, "第一行");
         assert_eq!(snap[1].text, "second line");
+    }
+
+    /// 验证意图:被监护程序(如 rs-iot 的 tracing 输出)带 ANSI 颜色码,
+    /// LogHub 应存纯文本——[32m 等转义码不能当乱码显示;纯 ANSI 行整行丢弃。
+    #[tokio::test]
+    async fn pipe_reader_strips_ansi_codes() {
+        let (mut tx, rx) = tokio::io::duplex(1024);
+        let log = Arc::new(LogHub::new(None));
+        // 模拟 tracing 彩色输出:ESC[32m(绿) INFO ESC[0m(复位) 消息
+        tx.write_all(b"\x1b[32mINFO\x1b[0m starting\n")
+            .await
+            .unwrap();
+        // 纯 ANSI 样式行(如仅暗淡+复位)应整行丢弃,不留空行
+        tx.write_all(b"\x1b[2m\x1b[0m\n").await.unwrap();
+        drop(tx);
+
+        pipe_reader(rx, Arc::clone(&log), LogStream::Stdout, encoding_rs::UTF_8).await;
+
+        let snap = log.snapshot(10);
+        assert_eq!(snap.len(), 1, "纯 ANSI 行应被丢弃:{snap:?}");
+        assert_eq!(snap[0].text, "INFO starting");
+        assert!(!snap[0].text.contains('\u{1b}'), "不应残留转义字符");
     }
 
     /// 验证意图:等级识别覆盖常见日志格式(括号/冒号/行首/独立词/tracing 风格)。

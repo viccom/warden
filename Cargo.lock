@@ -4708,6 +4708,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "strip-ansi-escapes"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a8f8038e7e7969abb3f1b7c2a811225e9296da208539e0f79c5251d6cac0025"
+dependencies = [
+ "vte",
+]
+
+[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5893,6 +5902,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vte"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "231fdcd7ef3037e8330d8e17e61011a2c244126acc0a982f4040ac3f9f0bc077"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "vtparse"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5942,6 +5960,7 @@ dependencies = [
  "reqwest-eventsource",
  "serde",
  "serde_json",
+ "strip-ansi-escapes",
  "sysinfo",
  "thiserror 2.0.20",
  "tokio",
@@ -5964,6 +5983,7 @@ dependencies = [
  "anyhow",
  "axum",
  "getrandom 0.3.4",
+ "libc",
  "serde",
  "serde_json",
  "tauri",
@@ -5972,6 +5992,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "warden",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
