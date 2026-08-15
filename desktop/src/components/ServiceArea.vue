@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 import { store, visibleServices, groupsOfVisible, groupAction, serviceAction } from '../store';
 import { clientFor, showToast } from '../api';
 
@@ -24,6 +25,15 @@ const logging = s =>
 
 async function edit(s) {
   store.serviceForm = { mode: 'edit', nodeUrl: s._node.url, name: s.name };
+}
+function openUi(s) {
+  const target = (s.ui_url || '').trim();
+  if (!target) return;
+  invoke('open_ui_entry', { target }).catch(e => showToast('打开失败:' + e, true));
+}
+function editConfigFile(s) {
+  if (!s.config_file) return;
+  store.configEditor = { nodeUrl: s._node.url, name: s.name };
 }
 async function remove(s) {
   if (!confirm(`删除服务「${s.name}」(节点 ${s._node.name})?(运行中不可删)`)) return;
@@ -125,7 +135,9 @@ async function createService() {
             {{ isRun(s) ? '停止' : '启动' }}
           </button>
           <button @click="serviceAction(s._node.url, s.name, 'restart')">重启</button>
-          <button @click="edit(s)">编辑</button>
+          <button :disabled="!s.ui_url" :title="s.ui_url ? '打开 UI 入口' : '未配置 UI 入口'" @click="openUi(s)">打开</button>
+          <button :disabled="!s.config_file" :title="s.config_file ? '编辑配置文件 ' + s.config_file : '未配置配置文件'" @click="editConfigFile(s)">编辑</button>
+          <button @click="edit(s)">属性</button>
           <button class="danger" @click="remove(s)">删除</button>
         </div>
       </div>

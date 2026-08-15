@@ -153,6 +153,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/services/{name}/config",
             get(routes_service::get_config),
         )
+        .route(
+            "/api/v1/services/{name}/config-file",
+            get(routes_service::get_config_file).put(routes_service::put_config_file),
+        )
         .route("/api/v1/services/{name}/start", post(routes_service::start))
         .route("/api/v1/services/{name}/stop", post(routes_service::stop))
         .route(

@@ -173,6 +173,117 @@ pub async fn delete(
     Ok(Json(json!({ "status": "deleted", "name": name })))
 }
 
+/// 服务配置文件读写上限(防大文件拖垮编辑器/请求体)。
+const CONFIG_FILE_MAX_BYTES: usize = 1024 * 1024;
+
+/// 按扩展名识别配置文件格式(toml/json 支持校验与格式化;其余按纯文本编辑)。
+fn config_file_format(path: &str) -> &'static str {
+    let p = path.to_ascii_lowercase();
+    if p.ends_with(".toml") {
+        "toml"
+    } else if p.ends_with(".json") {
+        "json"
+    } else if p.ends_with(".yaml") || p.ends_with(".yml") {
+        "yaml"
+    } else if p.ends_with(".ini") || p.ends_with(".cfg") || p.ends_with(".conf") {
+        "ini"
+    } else {
+        "text"
+    }
+}
+
+/// 读取服务的配置文件(ServiceConfig.config_file;未配置 → 404)。
+/// 文件不存在返回 exists=false + 空内容(编辑器可创建)。
+pub async fn get_config_file(
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+) -> WResult<impl IntoResponse> {
+    let h = st.supervisor.handle(&name)?;
+    let cfg = h.inner.lock().unwrap().config.clone();
+    let path = cfg
+        .config_file
+        .ok_or_else(|| WardenError::ServiceNotFound(format!("{name} 未配置 config_file")))?;
+    // 大文件先按 metadata 快速拒绝,避免整读后才报错
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > CONFIG_FILE_MAX_BYTES as u64 {
+            return Err(WardenError::Config(
+                "配置文件超过 1MB,不支持在线编辑".into(),
+            ));
+        }
+    }
+    let (exists, content) = match std::fs::read_to_string(&path) {
+        Ok(c) => (true, c),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (false, String::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            return Err(WardenError::Config(format!(
+                "配置文件不是 UTF-8 文本(GBK 等编码暂不支持在线编辑):{e}"
+            )));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if content.len() > CONFIG_FILE_MAX_BYTES {
+        return Err(WardenError::Config(
+            "配置文件超过 1MB,不支持在线编辑".into(),
+        ));
+    }
+    Ok(Json(json!({
+        "path": path,
+        "exists": exists,
+        "format": config_file_format(&path),
+        "content": content,
+    })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ConfigFileBody {
+    pub content: String,
+    /// true = 保存前格式化(仅 toml/json;其他格式忽略)。
+    #[serde(default)]
+    pub format: bool,
+}
+
+/// 保存服务的配置文件。toml/json 保存前校验(坏内容 400 拒绝且不落盘);
+/// format=true 时以规范格式落盘。父目录不存在则创建。
+pub async fn put_config_file(
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<ConfigFileBody>,
+) -> WResult<impl IntoResponse> {
+    let h = st.supervisor.handle(&name)?;
+    let cfg = h.inner.lock().unwrap().config.clone();
+    let path = cfg
+        .config_file
+        .ok_or_else(|| WardenError::ServiceNotFound(format!("{name} 未配置 config_file")))?;
+    if body.content.len() > CONFIG_FILE_MAX_BYTES {
+        return Err(WardenError::Config("内容超过 1MB,不支持在线编辑".into()));
+    }
+    let mut content = body.content;
+    match config_file_format(&path) {
+        "toml" => {
+            let v: toml::Value = toml::from_str(&content)
+                .map_err(|e| WardenError::Config(format!("toml 解析失败:{e}")))?;
+            if body.format {
+                content = toml::to_string(&v).map_err(|e| WardenError::Config(format!("{e}")))?;
+            }
+        }
+        "json" => {
+            let v: serde_json::Value = serde_json::from_str(&content)
+                .map_err(|e| WardenError::Config(format!("json 解析失败:{e}")))?;
+            if body.format {
+                content = serde_json::to_string_pretty(&v)
+                    .map_err(|e| WardenError::Config(format!("{e}")))?;
+            }
+        }
+        // yaml/ini/text:warden 无对应解析器,不校验不格式化,原样保存
+        _ => {}
+    }
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, &content)?;
+    Ok(Json(json!({ "path": path, "bytes": content.len() })))
+}
+
 pub async fn metrics(
     State(st): State<AppState>,
     Path(name): Path<String>,

@@ -25,6 +25,7 @@ fn svc(name: &str, cmd: &str, args: Vec<String>, graceful_timeout: u64) -> Servi
         restart: RestartPolicy::default(),
         health: None,
         ui_url: None,
+        config_file: None,
         graceful_timeout_secs: graceful_timeout,
         output_encoding: None,
         group: None,

@@ -7,6 +7,7 @@ import ServiceArea from './components/ServiceArea.vue';
 import LogPanel from './components/LogPanel.vue';
 import NodeDialog from './components/NodeDialog.vue';
 import ServiceForm from './components/ServiceForm.vue';
+import ConfigEditor from './components/ConfigEditor.vue';
 
 onMounted(async () => {
   try {
@@ -32,6 +33,7 @@ async function quit() {
     </main>
     <NodeDialog v-if="store.nodeDialog" />
     <ServiceForm v-if="store.serviceForm" />
+    <ConfigEditor v-if="store.configEditor" />
   </div>
   <div class="booting" v-else>
     <div class="spinner"></div>

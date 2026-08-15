@@ -44,6 +44,48 @@ fn nodes_remove(state: tauri::State<DesktopState>, url: String) -> Result<(), St
     state.nodes.lock().unwrap().remove(&url)
 }
 
+/// 打开 UI 入口(ServiceConfig.ui_url):http(s) 用默认浏览器,exe 直接启动,
+/// 文档用默认程序。Windows ShellExecuteW("open") 一个原语全覆盖;Unix xdg-open。
+#[tauri::command]
+fn open_ui_entry(target: String) -> Result<(), String> {
+    let t = target.trim();
+    if t.is_empty() {
+        return Err("入口为空".into());
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let op: Vec<u16> = "open\0".encode_utf16().collect();
+        let file: Vec<u16> = format!("{t}\0").encode_utf16().collect();
+        // hwnd=null;无工作目录与额外参数
+        let ret = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                op.as_ptr(),
+                file.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        // 返回值 >32 表示成功(ShellExecuteW 约定,HINSTANCE 是状态码非句柄)
+        if (ret as isize) > 32 {
+            Ok(())
+        } else {
+            Err(format!("打开失败(ShellExecuteW 返回 {})", ret as isize))
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(t)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("xdg-open 失败:{e}"))
+    }
+}
+
 /// 退出:先停内嵌 daemon(逆序 stop_all + serve 收尾)再退出进程。
 #[tauri::command]
 async fn quit_app(
@@ -131,6 +173,7 @@ pub fn run() {
             nodes_list,
             nodes_add,
             nodes_remove,
+            open_ui_entry,
             quit_app
         ])
         .run(tauri::generate_context!())

@@ -13,8 +13,13 @@ export function clientFor(node) {
       body: body ? JSON.stringify(body) : undefined,
     });
     if (!r.ok) {
-      const detail = r.status === 401 ? '(token 不对或未配?)' : '';
-      throw new Error(`HTTP ${r.status} ${detail}`);
+      // 优先取响应体里的 message(如 toml 解析失败的详细位置),否则退回状态码
+      let detail = r.status === 401 ? '(token 不对或未配?)' : '';
+      try {
+        const b = await r.json();
+        if (b && b.message) detail = b.message;
+      } catch { /* 非 JSON 响应 */ }
+      throw new Error(`HTTP ${r.status} ${detail}`.trim());
     }
     return r.json();
   }
@@ -31,6 +36,9 @@ export function clientFor(node) {
     logs: (name, tail = 300) =>
       req(`/api/v1/services/${enc(name)}/logs?tail=${tail}`).then(d => d.lines || []),
     config: name => req(`/api/v1/services/${enc(name)}/config`),
+    configFileGet: name => req(`/api/v1/services/${enc(name)}/config-file`),
+    configFilePut: (name, content, format = false) =>
+      req(`/api/v1/services/${enc(name)}/config-file`, 'PUT', { content, format }),
     createService: cfg => req('/api/v1/services', 'POST', cfg),
     updateService: (name, cfg) => req(`/api/v1/services/${enc(name)}`, 'PUT', cfg),
     deleteService: name => req(`/api/v1/services/${enc(name)}`, 'DELETE'),

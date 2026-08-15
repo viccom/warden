@@ -29,6 +29,7 @@ fn listener_svc(name: &str, args: Vec<String>) -> ServiceConfig {
         restart: Default::default(),
         health: None,
         ui_url: None,
+        config_file: None,
         graceful_timeout_secs: 5,
         output_encoding: None,
         group: None,

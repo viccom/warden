@@ -15,6 +15,7 @@ export const store = reactive({
   logTarget: null,    // {nodeUrl, name} 选中看日志的服务
   nodeDialog: false,  // 添加节点对话框
   serviceForm: null,  // {mode:'create'|'edit', nodeUrl, name?}
+  configEditor: null, // {nodeUrl, name} 配置文件编辑器
 });
 
 /// 本地 + 远程全部节点。

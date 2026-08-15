@@ -393,12 +393,37 @@ name = "a"
 command = "/bin/true"
 group = "edge"
 priority = 7
+ui_url = "http://127.0.0.1:8790"
+config_file = "E:/rsiot-field/config.toml"
 "#;
         let cfg = Config::parse(toml).unwrap();
+        assert_eq!(
+            cfg.services[0].config_file.as_deref(),
+            Some("E:/rsiot-field/config.toml")
+        );
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
         assert_eq!(back.services[0].group.as_deref(), Some("edge"));
         assert_eq!(back.services[0].priority, 7);
+        assert_eq!(
+            back.services[0].ui_url.as_deref(),
+            Some("http://127.0.0.1:8790")
+        );
+        assert_eq!(
+            back.services[0].config_file.as_deref(),
+            Some("E:/rsiot-field/config.toml")
+        );
+    }
+
+    #[test]
+    fn ui_url_and_config_file_default_none() {
+        let toml = "[[service]]\nname=\"a\"\ncommand=\"/bin/true\"\n";
+        let cfg = Config::parse(toml).unwrap();
+        assert_eq!(cfg.services[0].ui_url, None);
+        assert_eq!(
+            cfg.services[0].config_file, None,
+            "config_file 缺省应为 None"
+        );
     }
 
     #[test]

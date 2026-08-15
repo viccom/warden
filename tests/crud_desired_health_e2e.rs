@@ -199,6 +199,8 @@ async fn crud_group_priority_roundtrip() {
         "args": args,
         "group": "edge",
         "priority": 7,
+        "ui_url": "http://127.0.0.1:8790",
+        "config_file": "C:/tmp/demo.toml",
     });
     let r = hit(&state, "POST", "/api/v1/services", Some(body)).await;
     assert_eq!(r.status(), 200);
@@ -212,6 +214,14 @@ async fn crud_group_priority_roundtrip() {
         let s: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(s["group"], "edge", "状态快照应含 group:{s}");
         assert_eq!(s["priority"], 7, "状态快照应含 priority:{s}");
+        assert_eq!(
+            s["ui_url"], "http://127.0.0.1:8790",
+            "状态快照应含 ui_url:{s}"
+        );
+        assert_eq!(
+            s["config_file"], "C:/tmp/demo.toml",
+            "状态快照应含 config_file:{s}"
+        );
     }
 
     // 重建 state(daemon 重启模拟)后 overlay 恢复,group/priority 不丢
@@ -315,6 +325,7 @@ health = {{ type = "tcp", host = "127.0.0.1", port = {hport}, timeout_ms = 500, 
                 interval_secs: 1,
             }),
             ui_url: None,
+            config_file: None,
             graceful_timeout_secs: 2,
             output_encoding: None,
             group: None,
@@ -371,5 +382,103 @@ health = {{ type = "tcp", host = "127.0.0.1", port = {hport}, timeout_ms = 500, 
     );
 
     state.supervisor.stop_all().await;
+    let _ = std::fs::remove_dir_all(&data_dir);
+}
+
+/// 配置文件端点:GET 读取(不存在返回 exists=false)/PUT 保存(toml 校验+格式化)/未配置 404。
+#[tokio::test]
+async fn config_file_get_put_roundtrip() {
+    let data_dir = tmpdir("cfgfile");
+    let state = build_state(base_cfg(0, &data_dir), None);
+
+    // 服务未配 config_file → 404(语义:该服务不提供配置文件编辑)
+    let r = hit(&state, "GET", "/api/v1/services/file-svc/config-file", None).await;
+    assert_eq!(r.status(), 404, "未配置 config_file 应 404");
+
+    // PUT 配上 config_file(CRUD update)
+    let f = format!("{}/demo.toml", data_dir.replace('\\', "/"));
+    let up = serde_json::json!({ "name": "file-svc", "command": "x", "config_file": f });
+    let r = hit(&state, "PUT", "/api/v1/services/file-svc", Some(up)).await;
+    assert_eq!(r.status(), 200);
+
+    // 文件不存在:GET 返回 exists=false + 空内容(编辑器可创建)
+    let r = hit(&state, "GET", "/api/v1/services/file-svc/config-file", None).await;
+    assert_eq!(r.status(), 200);
+    {
+        use axum::body::to_bytes;
+        let b: serde_json::Value =
+            serde_json::from_slice(&to_bytes(r.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(b["exists"], false);
+        assert_eq!(b["format"], "toml");
+        assert_eq!(b["path"], f);
+    }
+
+    // PUT 保存(格式化):坏 toml → 400 且不落盘
+    let bad = serde_json::json!({ "content": "not = = valid [[[", "format": true });
+    let r = hit(
+        &state,
+        "PUT",
+        "/api/v1/services/file-svc/config-file",
+        Some(bad),
+    )
+    .await;
+    assert_eq!(r.status(), 400, "坏 toml 应被校验拒绝");
+    assert!(!std::path::Path::new(&f).exists(), "校验失败不应落盘");
+
+    // PUT 保存(格式化):合法 toml → 落盘为规范格式
+    let ok = serde_json::json!({ "content": "name='rs-iot'\nport=8790\n", "format": true });
+    let r = hit(
+        &state,
+        "PUT",
+        "/api/v1/services/file-svc/config-file",
+        Some(ok),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    let saved = std::fs::read_to_string(&f).unwrap();
+    assert_eq!(
+        saved, "name = \"rs-iot\"\nport = 8790\n",
+        "应保存为规范 toml:{saved}"
+    );
+
+    // GET 回读存在的内容
+    let r = hit(&state, "GET", "/api/v1/services/file-svc/config-file", None).await;
+    {
+        use axum::body::to_bytes;
+        let b: serde_json::Value =
+            serde_json::from_slice(&to_bytes(r.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(b["exists"], true);
+        assert_eq!(b["content"], "name = \"rs-iot\"\nport = 8790\n");
+    }
+
+    // 非 UTF-8(GBK 等)文件:明确 400 而非 500,提示不支持在线编辑
+    std::fs::write(&f, [0xD6, 0xD0, 0xCE, 0xC4]).unwrap(); // "中文" 的 GBK 字节
+    let r = hit(&state, "GET", "/api/v1/services/file-svc/config-file", None).await;
+    assert_eq!(r.status(), 400, "非 UTF-8 文件应 400(可读错误),非 500");
+    {
+        use axum::body::to_bytes;
+        let b: serde_json::Value =
+            serde_json::from_slice(&to_bytes(r.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert!(
+            b["message"].as_str().unwrap_or("").contains("UTF-8"),
+            "错误信息应说明编码问题:{b}"
+        );
+    }
+
+    // 非 toml/json 格式(yaml):不做校验,原样保存
+    let y = format!("{}/demo.yaml", data_dir.replace('\\', "/"));
+    let up = serde_json::json!({ "name": "file-svc", "command": "x", "config_file": y });
+    hit(&state, "PUT", "/api/v1/services/file-svc", Some(up)).await;
+    let body = serde_json::json!({ "content": "a: [unclosed\n", "format": true });
+    let r = hit(
+        &state,
+        "PUT",
+        "/api/v1/services/file-svc/config-file",
+        Some(body),
+    )
+    .await;
+    assert_eq!(r.status(), 200, "yaml 不校验,原样保存");
+    assert_eq!(std::fs::read_to_string(&y).unwrap(), "a: [unclosed\n");
+
     let _ = std::fs::remove_dir_all(&data_dir);
 }

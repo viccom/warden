@@ -36,8 +36,15 @@ warden 是一个 **Rust 进程监护管理工具**(supervisord / pm2 风格的 s
 cargo build                                  # debug 编译
 cargo test                                   # 全测(单测 + 集成)
 cargo test --test supervisor_e2e             # 单跑某集成测试
-cargo clippy --all-targets -- -D warnings    # CI 门槛,零警告
+cargo clippy --all-targets -- -D warnings    # CI 门槛,零警告(根 crate)
+cargo check -p warden-desktop                # 桌面版 Rust crate 编译检查(workspace 成员)
 cargo run -- run --config config/services.example.toml   # 前台跑 daemon
+
+# 桌面版(Tauri 2,desktop/ 目录):
+cd desktop && pnpm install
+pnpm tauri dev          # 开发模式(vite HMR + cargo 增量)
+pnpm tauri build --no-bundle   # 仅产出 target/release/warden-desktop.exe
+pnpm build              # 仅前端构建(vite)
 
 # HTTP API 默认 127.0.0.1:8789;auth_token 空(默认)则不鉴权
 curl http://127.0.0.1:8789/api/v1/health

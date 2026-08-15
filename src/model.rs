@@ -43,6 +43,10 @@ pub struct ServiceConfig {
     /// 可在 TUI/Web 打开的管理 URL。
     #[serde(default)]
     pub ui_url: Option<String>,
+    /// 子进程配置文件路径(桌面版「编辑」入口;只要求文本格式 toml/ini/yaml 等)。
+    /// None = 不提供配置文件编辑。
+    #[serde(default)]
+    pub config_file: Option<String>,
     /// 优雅停止等待秒数:发信号后给目标 graceful 的时限,超时则强杀整棵进程树。
     #[serde(default = "default_graceful_timeout_secs")]
     pub graceful_timeout_secs: u64,

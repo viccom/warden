@@ -38,6 +38,7 @@ fn make_config(
         },
         health: None,
         ui_url: None,
+        config_file: None,
         graceful_timeout_secs: 1,
         output_encoding: None,
         group: None,

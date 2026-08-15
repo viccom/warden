@@ -453,6 +453,8 @@ impl ProcHandle {
             auto_restart: g.config.auto_restart,
             group: g.config.group.clone(),
             priority: g.config.priority,
+            ui_url: g.config.ui_url.clone(),
+            config_file: g.config.config_file.clone(),
         }
     }
 
@@ -499,6 +501,10 @@ pub struct ServiceStatus {
     pub group: Option<String>,
     /// 启动优先级(小者先启动、后停止)。
     pub priority: u32,
+    /// UI 入口(桌面版「打开」按钮;None = 禁用)。
+    pub ui_url: Option<String>,
+    /// 配置文件路径(桌面版「编辑」按钮;None = 禁用)。
+    pub config_file: Option<String>,
 }
 
 #[cfg(test)]
@@ -519,6 +525,7 @@ mod tests {
             restart: Default::default(),
             health: None,
             ui_url: None,
+            config_file: None,
             graceful_timeout_secs: 1,
             output_encoding: None,
             group: None,
