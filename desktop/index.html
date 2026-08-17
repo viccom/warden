@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>warden 桌面版</title>
+    <script>
+      try {
+        const p = JSON.parse(localStorage.getItem('warden_prefs') || '{}');
+        if (p.theme === 'light') document.documentElement.dataset.theme = 'light';
+      } catch (e) { /* 坏数据忽略,落到默认暗色 */ }
+    </script>
   </head>
   <body>
     <div id="app"></div>
