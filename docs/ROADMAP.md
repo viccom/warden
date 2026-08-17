@@ -2,7 +2,7 @@
 
 > **跨会话接续入口**:新会话先读本文件的「当前进度」,再按需查 [`DESIGN.md`](./DESIGN.md) 对应章节,然后从下一个 `[ ]` 步骤继续。每完成一步把 `[ ]` 改 `[x]` 并更新「最后更新」日期,必要时写「变更日志」。
 
-- **最后更新**:2026-08-15
+- **最后更新**:2026-08-17
 - **当前阶段**:Phase 5 桌面版 P1 完成(组级 API + Tauri 2 多节点桌面端);warden 78 测试绿 + clippy/fmt clean
 - **下一步**:桌面版 P2(metrics 图表/系统通知/自动发现)或自升级(取舍讨论见 RESEARCH-SELF-UPDATE.md)或 Phase 2 剩余(systemd 实测)
 
@@ -96,6 +96,7 @@
 - [x] Rust 桌面端 ✅(2026-08-15):单实例插件 + 内嵌 daemon(127.0.0.1 随机端口+随机 token,data/log 目录与 CLI 隔离)+ 托盘(关闭最小化/托盘退出=逆序优雅停全部子进程)+ nodes.json 节点命令
 - [x] Vue 前端 ✅(2026-08-15):节点侧栏(内嵌自动+远程添加/删除)/服务卡片(状态/健康/组/优先级/端口/CPU/内存)/组过滤 chips+组级启停/日志 SSE(token 节点轮询降级)/CRUD 表单/暗色主题
 - [x] 验证 + 演示 ✅(2026-08-15):release 构建(5m)通过;WARDEN_CONFIG 注入三件套,内嵌 daemon 按优先级拉起,托盘/窗口行为正常。P2 待做:metrics 图表/系统通知/自动发现/开机自启
+- [x] **桌面版浅色主题 + 切换器 ✅(2026-08-17)**:在暗色基础上加 GitHub Light 风格浅色系,侧栏右上角 ☀/☾ 按钮切换,偏好持久化到 `warden_prefs`(搭车 nodeFilter/group)。5 commit(变量层 9 新变量 + 浅色覆盖 + 徽章 box-shadow 修正 / 状态层 applyTheme+toggleTheme / 侧栏按钮 + 标签变量化 / 剩余 7 处硬编码色(LogPanel stderr + ConfigEditor 6 个语法 token)/ index.html head 内联 FOUC 脚本——CSS 解析前预设 data-theme,实现无闪烁启动)。编译 `pnpm build` 通过(11.14 kB CSS / 96.62 kB JS);Tauri 实测切换 + 重开保持双方向生效。CLI Web 版(`web/index.html`)独立前端不在本批次。Final review 提了 1 个非阻塞项(light `--accent-dim` 在 selected-node 边框对比度偏弱,属后续观感微调项,不阻塞)。
 
 ---
 
@@ -126,3 +127,4 @@
 - **2026-08-17(桌面版可观测性补全 + 「属性保存失败」排查 ✅)**:用户报桌面版「属性」表单(改 ui_url/config_file)无法保存——本地全链路复刻(node 逐行照抄 ServiceForm 回填+toCfg 的 round-trip + 真实分节式配置文件)后端三条路径(空闲 PUT/运行中 PUT/config-file 编辑器)全部 200 且文件落盘正确,静态审查无缺陷;用户现场文件 mtime 佐证保存从未落盘,根因锁定桌面版运行环境,但**桌面版零日志无法定位**(直接调 serve_with_shutdown 跳过 init_tracing,GUI 无 console 且 eprintln 进隐藏 console 丢失)。修复:① `init_tracing` 导出(LogGuard 包装,调用方无需依赖 tracing_appender),桌面版 daemon::start 日志先行(guard 存 EmbeddedDaemon),配置加载/缺配置/daemon 退出全改 tracing——落 `%LOCALAPPDATA%\io.warden.desktop\logs\warden.log.<date>`;② CRUD create/update/delete 成功路径加 `[config] xxx 写回 <路径>` 日志(实测落盘),配合 TraceLayer 的请求级日志,401/500 一目了然;③ atomic_write 改直 rename(Windows MoveFileExW 自带覆盖语义),目标被占用时错误带路径。桌面 crate +tracing 依赖。86 测试全绿 + 双 crate clippy clean;双版本已重编译(11:44/11:49)。待用户用新版重测,日志即铁证。
 - **2026-08-17(「保存无反应」诊断增强 ✅)**:用户实测新版桌面版——日志仅有 3 行启动记录(证明 init_tracing 生效、配置路径正确),但「点保存完全无反应、取消正常」。定位:PUT 从未成功到达 handler(成功必有 `[config] update` INFO 日志);前端 save() 的 toCfg() 在 try 外(字段异常=静默无反应)、fetch 挂起也无任何反馈;且请求级日志(TraceLayer)默认 DEBUG 级被 EnvFilter=info 滤掉,401/500 在日志里不可见。修复:① 前端 save() 全面可观测化(toCfg 挪入 try、saving 状态+按钮禁用变「保存中…」、错误显示兜底 String(e));② TraceLayer 请求日志提到 INFO(make_span_with info_span + on_response 具名泛型函数——闭包写法撞 FnOnce 高阶生命周期不够泛,实测验证每请求一行 method/path/status/latency);③ auth 401 拒绝加 INFO 日志(带 method/path)。86 测试全绿+双 crate clippy clean;双版本重编译(warden 12:32 / desktop 12:36)。下轮用户重测:按钮反馈+请求级日志双保险,401/挂起/写回失败一次定位。
 - **2026-08-17(「保存无反应」根因修复 ✅)**:上轮可观测化钓出真凶——用户报错 `保存失败:Cannot read properties of null (reading 'includes')`:桌面版 ServiceForm 的 save() 对 `cfg.group.includes('/')` 求值,而 toCfg 把空分组转 null(后端 Option 语义)→ **编辑任何未设分组的服务保存必抛 TypeError**;旧代码 toCfg 在 try 外 → 静默无反应(即全程追踪的"点保存无效"根因,后端自始无问题)。修复:`cfg.group && cfg.group.includes('/')` 空值守卫。CLI Web 无同款问题(直接读 input 值无 null 陷阱)。桌面版重编译(12:42);CLI(12:32)不含此文件无需重编。
+- **2026-08-17(桌面版浅色主题 ✅)**:5 commit 在桌面版 Vue 前端加 GitHub Light 风格浅色主题(状态层搭车 warden_prefs + 9 个语义化变量 + 浅色覆盖 + 侧栏切换按钮 + 7 处硬编码色变量化 + index.html FOUC 脚本——无闪烁启动)。详见 Phase 5 桌面版 P1 区块末条。Final review 通过,1 个非阻塞观感项(--accent-dim 浅色值对比度偏弱)留后续微调。
