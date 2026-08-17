@@ -58,6 +58,8 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+# 配置文件文档级编辑(CRUD 写回唯一数据源;保注释/排版,与 toml 0.8 同源版本)
+toml_edit = "0.20"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"

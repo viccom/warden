@@ -200,12 +200,13 @@ pub struct ProcMetrics {
 
 **关键行为**:
 - **spawn**:`tokio::process::Command::new(command).args(args).envs(env).current_dir(working_dir).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()`。
+- **spawn 失败零重试**:命令不存在/无权限等 spawn 即错 → 直接 `Failed{reason: "spawn 失败:…"}`,不进 backoff 重启决策(区别于进程退出路径;不采用 supervisord 的 FATAL 重试——坏路径重试无意义且徒刷日志)。
 - **退出处理**:wait task `child.wait().await` → 据 `exit_code` + `auto_restart` + 重启计数决策。`restart_window`:距上次启动超过窗口则重置计数(避免长期运行的服务偶尔崩溃也被计入熔断)。
 - **backoff**:第 n 次重试等待 `min(initial * factor^(n-1), max)`。例:1000ms → 2000 → 4000 → 8000 … 封顶 60000ms。
 - **stop(Phase 1)**:`child.kill()`(Windows = TerminateProcess,强制终止)。优雅停止(Linux SIGTERM / Windows GenerateConsoleCtrlEvent / Job Object)列 **Phase 4**。
 - **日志接管**:spawn 后起两个 reader task,按行读 stdout/stderr → 推入该服务 `LogHub`(区分 stdout/stderr 标记)。
 - **metrics**:sysinfo 每 2s 按已记录的 PID 采 CPU/内存,写入 `ProcRuntime.metrics`。
-- **有序启停**:`start_all`/`start_auto`/`start_desired` 按 priority 升序(name 字典序 tie-break)启动 + **就绪推进**(每服务等到离开 Starting、上限 15s 再启动下一个,Failed/Restarting 不阻塞后续);`stop_all` 逆序(被依赖方最后停)。见 `Supervisor::ordered_names`/`start_ordered`。
+- **有序启停**:`start_all`/`start_auto` 按 priority 升序(name 字典序 tie-break)启动 + **就绪推进**(每服务等到离开 Starting、上限 15s 再启动下一个,Failed/Restarting 不阻塞后续);`stop_all` 逆序(被依赖方最后停)。见 `Supervisor::ordered_names`/`start_ordered`。
 - **监听端口发现**(`supervisor/ports.rs`):metrics task 周期采集全系统 socket 表(netstat2,Windows GetExtendedTcp/UdpTable / Linux netlink)→ 按**服务 PID 子树**(含孙进程,启动器形态)过滤 TCP LISTEN / UDP 绑定 → 写入 `ProcInner.ports`,经 `ServiceStatus.listening_ports` 透出。UDP 仅"已绑定"语义(无 listen),不支持 UDP 健康检查。
 
 **并发模型**:Supervisor 持 `DashMap<String, ProcRuntime>`。状态读写用 `RwLock`/`Mutex` 保护最小临界区;长操作(spawn/wait/backoff sleep)在独立 tokio task,不阻塞 API 线程。这与 rs-iot 的 InstanceManager(states/handles/configs 多 DashMap)模式一致。
@@ -309,7 +310,7 @@ auto_restart = false
 | 崩溃重启 | 内置但默认关闭 | 默认不干扰现场调试;每服务可显式开 auto_restart + 配退避 |
 | stop 方式 | 强制 kill(P1) | Windows 无对任意进程的优雅信号;TerminateProcess 够用;优雅停止列 P4 |
 | 鉴权 | 静态 token(P1) | 无前端本地工具,JWT 太重;P4 加 Web 再升级 |
-| 运行态持久化 | 不持久化(P1) | 对齐 serviceMgr-tui 无状态哲学,daemon 重启从 config 的 auto_start 出发;desired-state 持久化列 P4 |
+| 运行态持久化 | 不持久化;**配置文件是唯一数据源**(2026-08-17 重构) | CRUD 经 `config_edit`(toml_edit 保注释)直接写回配置文件;daemon 重启只按 auto_start 拉起(supervisord 语义)。曾有的 runtime overlay + desired_state 已废除,启动时一次性迁移(旧文件改 .bak)——单数据源,删文件即清空,无"幽灵服务" |
 | handler 错误 | `Result + IntoResponse` | 比 rs-iot 手写 `Json<Value>` 规整,新项目做改进(规则 6 暴露而非折中) |
 | 单 crate(lib+bin) | MVP 不拆 workspace | 简洁优先;P3 加 TUI 再评估拆 `warden-tui` crate |
 | TUI/Web 接入 | 连 HTTP API | API 契约先行,前端形态可换;TUI 用 reqwest 连本地/远程 API |

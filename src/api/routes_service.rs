@@ -1,9 +1,9 @@
 //! 服务生命周期端点:list / get / start / stop / restart / metrics / start-all / stop-all / reload
 //! + 运行时 CRUD(create / update / delete)。
 //!
-//! desired-state 标记:仅用户显式操作(start/stop/restart/start-all/stop-all)写入
-//! desired_state.json;daemon 优雅停机的 stop_all(在 lib.rs)不清除,重启后由
-//! start_desired 恢复。
+//! 数据源:配置文件是唯一数据源——CRUD 写回 `AppState::effective_config_path()`
+//! (toml_edit 保注释,原子写),Supervisor 内存随之同步;start/stop 等运行时
+//! 操作不持久化(daemon 重启后按 auto_start 决定拉起,语义与 supervisord 一致)。
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
@@ -11,8 +11,9 @@ use axum::Json;
 use serde_json::json;
 use std::collections::HashSet;
 
-use crate::api::{persist_runtime, AppState};
+use crate::api::AppState;
 use crate::config;
+use crate::config_edit::ConfigFile;
 use crate::error::{WResult, WardenError};
 use crate::model::ServiceConfig;
 
@@ -43,7 +44,6 @@ pub async fn start(
     Path(name): Path<String>,
 ) -> WResult<impl IntoResponse> {
     st.supervisor.start(&name).await?;
-    st.supervisor.set_desired(&name, true);
     Ok(Json(json!({ "status": "started", "name": name })))
 }
 
@@ -52,7 +52,6 @@ pub async fn stop(
     Path(name): Path<String>,
 ) -> WResult<impl IntoResponse> {
     st.supervisor.stop(&name).await?;
-    st.supervisor.set_desired(&name, false);
     Ok(Json(json!({ "status": "stopped", "name": name })))
 }
 
@@ -61,78 +60,70 @@ pub async fn restart(
     Path(name): Path<String>,
 ) -> WResult<impl IntoResponse> {
     st.supervisor.restart(&name).await?;
-    st.supervisor.set_desired(&name, true);
     Ok(Json(json!({ "status": "restarted", "name": name })))
 }
 
 pub async fn start_all(State(st): State<AppState>) -> impl IntoResponse {
     st.supervisor.start_all().await;
-    for name in st.supervisor.names() {
-        st.supervisor.set_desired(&name, true);
-    }
     Json(json!({ "status": "start-all done" }))
 }
 
 pub async fn stop_all(State(st): State<AppState>) -> impl IntoResponse {
     st.supervisor.stop_all().await;
-    for name in st.supervisor.names() {
-        st.supervisor.set_desired(&name, false);
-    }
     Json(json!({ "status": "stop-all done" }))
 }
 
-/// 组级启动:组内按优先级序 + 就绪推进;desired 随组操作同步。
+/// 组级启动:组内按优先级序 + 就绪推进。
 pub async fn group_start(
     State(st): State<AppState>,
     Path(group): Path<String>,
 ) -> WResult<impl IntoResponse> {
     let names = st.supervisor.start_group(&group).await;
-    for n in &names {
-        st.supervisor.set_desired(n, true);
-    }
     Ok(Json(
         json!({ "status": "group-start done", "group": group, "services": names }),
     ))
 }
 
-/// 组级停止:组内逆序(被依赖方最后停);desired 随组操作同步。
+/// 组级停止:组内逆序(被依赖方最后停)。
 pub async fn group_stop(
     State(st): State<AppState>,
     Path(group): Path<String>,
 ) -> WResult<impl IntoResponse> {
     let names = st.supervisor.stop_group(&group).await;
-    for n in &names {
-        st.supervisor.set_desired(n, false);
-    }
     Ok(Json(
         json!({ "status": "group-stop done", "group": group, "services": names }),
     ))
 }
 
-// ── 运行时 CRUD ────────────────────────────────────────────────
+// ── 运行时 CRUD(写回配置文件,唯一数据源)───────────────────────
 
-/// 新增服务:body = ServiceConfig JSON。校验后注册(不启动)+ 落盘 overlay。
+/// 新增服务:body = ServiceConfig JSON。校验后写回配置文件 + 注册(不启动)。
+/// 文件不可写(只读等)则整体拒绝,内存不动。
 pub async fn create(
     State(st): State<AppState>,
     Json(svc): Json<ServiceConfig>,
 ) -> WResult<impl IntoResponse> {
+    let _edit = st.config_edit_lock.lock().unwrap();
     let mut seen = HashSet::new();
-    // 与现有服务(含主配置)查重
+    // 与现有服务(含配置文件)查重——锁内做,并发同名 create 后者在写入前被拒
     for name in st.supervisor.names() {
         seen.insert(name);
     }
     config::validate_service(&svc, &mut seen).map_err(WardenError::Config)?;
-    st.supervisor.add(svc.clone());
-    {
-        let mut reg = st.runtime_services.lock().unwrap();
-        reg.retain(|s| s.name != svc.name);
-        reg.push(svc.clone());
-    }
-    persist_runtime(&st);
+    let mut file = ConfigFile::load_or_create(&st.effective_config_path())?;
+    file.append_service(&svc)?;
+    file.save()?;
+    st.supervisor.add(svc.clone())?;
+    tracing::info!(
+        "[config] create '{}' 写回 {}",
+        svc.name,
+        st.effective_config_path().display()
+    );
     Ok(Json(json!({ "status": "created", "name": svc.name })))
 }
 
-/// 更新服务配置:仅 Stopped/Failed 可改(运行中返回 InvalidState)。
+/// 更新服务配置:任意状态可改(运行中允许保存:进程状态保留,新配置下次
+/// start/restart 生效;health/组排序等读 config 的即时生效)。删除仍要求停止。
 /// body = 新 ServiceConfig,name 必须与路径一致。
 pub async fn update(
     State(st): State<AppState>,
@@ -147,29 +138,40 @@ pub async fn update(
     }
     let mut seen = HashSet::new();
     config::validate_service(&svc, &mut seen).map_err(WardenError::Config)?;
+    let _edit = st.config_edit_lock.lock().unwrap();
+    let mut file = ConfigFile::load_or_create(&st.effective_config_path())?;
+    file.replace_service(&svc)?;
+    file.save()?;
     st.supervisor.update(svc.clone())?;
-    {
-        let mut reg = st.runtime_services.lock().unwrap();
-        reg.retain(|s| s.name != name);
-        reg.push(svc.clone());
-    }
-    persist_runtime(&st);
+    tracing::info!(
+        "[config] update '{}' 写回 {}",
+        name,
+        st.effective_config_path().display()
+    );
     Ok(Json(json!({ "status": "updated", "name": name })))
 }
 
-/// 删除服务:仅 Stopped/Failed 可删。同时从 overlay 移除(主配置文件中的服务
-/// 重启 daemon 后会回来——删除主配置服务需直接改文件)。
+/// 删除服务:仅 Stopped/Failed 可删(运行中返回 InvalidState)。
+/// 先移除运行时句柄,再从配置文件删除条目(真删,重启不复活)。
 pub async fn delete(
     State(st): State<AppState>,
     Path(name): Path<String>,
 ) -> WResult<impl IntoResponse> {
+    let _edit = st.config_edit_lock.lock().unwrap();
     st.supervisor.remove(&name)?;
-    {
-        let mut reg = st.runtime_services.lock().unwrap();
-        reg.retain(|s| s.name != name);
+    let mut file = ConfigFile::load_or_create(&st.effective_config_path())?;
+    if let Err(e) = file.remove_service(&name) {
+        // 句柄已移除但文件未删(如条目缺失):如实报错,重启后该服务会回来
+        return Err(WardenError::Config(format!(
+            "已从运行时移除,但配置文件删除条目失败({e});重启后服务会恢复"
+        )));
     }
-    persist_runtime(&st);
-    st.supervisor.set_desired(&name, false);
+    file.save()?;
+    tracing::info!(
+        "[config] delete '{}' 写回 {}",
+        name,
+        st.effective_config_path().display()
+    );
     Ok(Json(json!({ "status": "deleted", "name": name })))
 }
 
@@ -294,11 +296,11 @@ pub async fn metrics(
     ))
 }
 
-/// 重新加载配置文件,增量同步(add 新服务 / remove 已停止的旧服务,运行中保留)。
-/// 注意:运行时 overlay 的服务不在主配置文件中,增量同步不会移除活跃服务,故保留。
+/// 重新加载配置文件并增量同步(文件是唯一数据源):
+/// 新服务注册 / 消失的服务优雅停止后移除 / 同名服务配置替换(下次启动生效)。
 pub async fn reload(State(st): State<AppState>) -> WResult<impl IntoResponse> {
     let cfg = config::Config::load(st.config_path.as_deref())?;
     let count = cfg.services.len();
-    st.supervisor.apply_config(&cfg);
+    st.supervisor.apply_config(&cfg).await;
     Ok(Json(json!({ "status": "reloaded", "services": count })))
 }

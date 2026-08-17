@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 pub mod api;
 pub mod config;
+pub mod config_edit;
 pub mod error;
 pub mod logs;
 pub mod model;
@@ -81,7 +82,7 @@ pub async fn run_app_with_shutdown(
 }
 
 /// 共享 serve 编排(CLI 前台/Service/桌面版内嵌 daemon 同一实现):
-/// build state → start_auto → desired → metrics → health → serve(5s drain 上限)→ stop_all。
+/// build state → start_auto → metrics → health → serve(5s drain 上限)→ stop_all。
 /// listener 由调用方绑定(CLI 用配置端口;桌面版用随机端口)。
 pub async fn serve_with_shutdown(
     cfg: config::Config,
@@ -92,8 +93,6 @@ pub async fn serve_with_shutdown(
     let alert_webhook = cfg.daemon.alert_webhook.clone();
     let state = api::build_state(cfg, config_path);
     state.supervisor.start_auto().await;
-    // 恢复期望状态:desired_state.json 中 true 的服务(auto_start 已启动的幂等跳过)
-    state.supervisor.start_desired().await;
     state
         .supervisor
         .clone()
@@ -145,8 +144,13 @@ pub async fn serve_with_shutdown(
 }
 
 /// 初始化 tracing:控制台层 + 可选按日轮转文件层。
-/// 返回的 guard 须由调用方持有到程序结束(Service 模式在 exit(0) 前显式 drop)。
-fn init_tracing(log_dir: &str) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+/// 返回的 guard 须由调用方持有到程序结束(Service 模式在 exit(0) 前显式 drop;
+/// 桌面版存于 EmbeddedDaemon)。guard 用包装类型,调用方(桌面 crate)无需
+/// 依赖 tracing_appender。纯 RAII 守卫:字段仅靠 Drop 时 flush 生效,永不被读。
+#[expect(dead_code)]
+pub struct LogGuard(Option<tracing_appender::non_blocking::WorkerGuard>);
+
+pub fn init_tracing(log_dir: &str) -> LogGuard {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::{fmt, Layer};
@@ -167,5 +171,5 @@ fn init_tracing(log_dir: &str) -> Option<tracing_appender::non_blocking::WorkerG
     };
 
     let _ = tracing_subscriber::registry().with(layers).try_init();
-    guard
+    LogGuard(guard)
 }

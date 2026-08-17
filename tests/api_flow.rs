@@ -238,7 +238,7 @@ async fn auth_accepts_with_correct_token_and_health_is_public() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-/// 意图:组级启停端点按组作用(组内优先级序),desired-state 随组操作同步。
+/// 意图:组级启停端点按组作用(组内优先级序,不波及组外)。
 #[tokio::test]
 async fn group_routes_start_and_stop_scoped() {
     let (cmd, args) = common::long_runner();

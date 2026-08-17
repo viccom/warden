@@ -16,6 +16,8 @@ use crate::model::ProcState;
 use super::ProcHandle;
 
 /// 监护循环:启动 → 监听退出 → 按策略重启,直到主动停止或熔断。
+/// spawn 失败(命令不存在/无权限等)是**零重试**:直接 Failed 不进重启决策
+/// ——区别于进程退出后的 backoff 熔断路径(坏路径重试无意义且徒刷日志)。
 pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
     loop {
         // 每次重启取最新配置快照(运行中 update 保存的配置在此生效)

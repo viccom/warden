@@ -18,6 +18,7 @@ warden 是一个 **Rust 进程监护管理工具**(supervisord / pm2 风格的 s
 | `main.rs` | clap CLI(`run` 前台跑 daemon;`tui`/`install`/`uninstall`/`service` 占位待 Phase 2/3) |
 | `lib.rs` | 库入口;`run_app` 编排(config→tracing→auto_start→metrics→axum→graceful shutdown) |
 | `config.rs` | toml 解析 + Default + 路径查找(`$WARDEN_CONFIG`→exe_dir→cwd→平台标准位置)+ 校验(坏项跳过并 warn) |
+| `config_edit.rs` | 配置文件文档级编辑(toml_edit,保注释/排版)+ 临时文件原子写 + 旧 overlay/desired 一次性迁移;CRUD 写回唯一数据源 |
 | `error.rs` | `WardenError`(thiserror + `#[non_exhaustive]` + `impl IntoResponse`)+ `WResult<T>` |
 | `model.rs` | `ServiceConfig` / `ProcState` / `RestartPolicy` / `HealthCheck` / `ProcMetrics` |
 | `logs.rs` | `LogHub`(VecDeque 环缓冲 2000 + broadcast 256 + 按日轮转文件) |

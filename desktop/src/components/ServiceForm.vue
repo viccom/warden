@@ -8,6 +8,7 @@ const form = store.serviceForm; // {mode, nodeUrl, name?}
 const editing = form.mode === 'edit';
 const f = ref(blank());
 const err = ref('');
+const saving = ref(false);
 
 // 缺省与后端 RestartPolicy::default()/HealthCheck 默认对齐——空值也走 toCfg 显式回传,
 // 避免未暴露字段被 serde default 静默重置(编辑丢配置的根因)。
@@ -124,19 +125,25 @@ onMounted(async () => {
 });
 
 async function save() {
+  if (saving.value) return;
   err.value = '';
-  const cfg = toCfg();
-  if (!cfg.name || !cfg.command) { err.value = '名称和可执行文件路径必填'; return; }
-  if (cfg.group.includes('/')) { err.value = "分组名不能含 '/'"; return; }
-  const c = clientFor({ url: form.nodeUrl, token: tokenOf(form.nodeUrl) });
+  saving.value = true;
   try {
+    // toCfg 一并入 try:任何字段异常都浮出为可见错误,而非静默无反应
+    const cfg = toCfg();
+    if (!cfg.name || !cfg.command) { err.value = '名称和可执行文件路径必填'; return; }
+    // toCfg 把空分组转为 null(后端 Option 语义),判斜杠前先防空
+    if (cfg.group && cfg.group.includes('/')) { err.value = "分组名不能含 '/'"; return; }
+    const c = clientFor({ url: form.nodeUrl, token: tokenOf(form.nodeUrl) });
     if (editing) await c.updateService(form.name, cfg);
     else await c.createService(cfg);
     store.serviceForm = null;
     showToast((editing ? '已更新:' : '已创建:') + cfg.name);
     setTimeout(refresh, 300);
   } catch (e) {
-    err.value = '保存失败:' + e.message;
+    err.value = '保存失败:' + (e.message || String(e));
+  } finally {
+    saving.value = false;
   }
 }
 </script>
@@ -197,7 +204,7 @@ async function save() {
       <div class="err">{{ err }}</div>
       <div class="actions">
         <button @click="store.serviceForm = null">取消</button>
-        <button class="primary" @click="save">保存</button>
+        <button class="primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
       </div>
     </div>
   </div>

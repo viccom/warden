@@ -11,8 +11,7 @@ pub mod ports;
 pub mod proc;
 pub mod signal;
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -42,21 +41,34 @@ impl Supervisor {
         }
     }
 
-    /// 从配置构建:为每个 service 建句柄(不启动)。
+    /// 从配置构建:为每个 service 建句柄(不启动)。重复 name 跳过并 warn
+    /// (Config::parse 已查重,此处兜底手动构造的 Config)。
     pub fn from_config(cfg: &Config, data_dir: PathBuf) -> Self {
         let sv = Self::new(data_dir);
         for svc in &cfg.services {
-            sv.add(svc.clone());
+            if let Err(e) = sv.add(svc.clone()) {
+                tracing::warn!("[supervisor] 跳过重复服务项:{e}");
+            }
         }
         sv
     }
 
-    /// 注册一个服务(不启动)。
-    pub fn add(&self, config: ServiceConfig) {
+    /// 注册一个服务(不启动)。name 已存在返回 InvalidState(entry 原子判重,
+    /// 防裸 insert 静默替换句柄——旧监护 task 不会被取消,进程将脱离管理)。
+    pub fn add(&self, config: ServiceConfig) -> WResult<()> {
         let name = config.name.clone();
         let log = Arc::new(LogHub::new(self.make_log_file(&name)));
         let handle = Arc::new(ProcHandle::new(config, log));
-        self.handles.insert(name, handle);
+        match self.handles.entry(name.clone()) {
+            dashmap::mapref::entry::Entry::Vacant(e) => {
+                e.insert(handle);
+                Ok(())
+            }
+            dashmap::mapref::entry::Entry::Occupied(_) => Err(WardenError::InvalidState(
+                name,
+                "已存在,拒绝重复注册".into(),
+            )),
+        }
     }
 
     fn make_log_file(&self, name: &str) -> Option<RollingFile> {
@@ -262,53 +274,32 @@ impl Supervisor {
         Ok(())
     }
 
-    // ── desired-state 持久化(daemon 重启后恢复期望状态)──────────────
-    // 仅用户显式操作(API start/stop/start-all/stop-all)标记;
-    // daemon 优雅停机的 stop_all 不清除,重启后 start_desired 恢复。
-
-    fn desired_path(&self) -> Option<PathBuf> {
-        if self.data_dir.as_os_str().is_empty() {
-            None
-        } else {
-            Some(self.data_dir.join("desired_state.json"))
+    /// 增量同步配置(reload 语义;配置文件是唯一数据源):
+    /// - 新配置多出的服务:注册(不启动,auto_start 由启动编排决定);
+    /// - 消失的服务:优雅停止(活跃态)后移除——不制造孤儿句柄;
+    /// - 同名服务:配置原位替换(运行中保留,下次启动生效)。
+    pub async fn apply_config(&self, cfg: &Config) {
+        use std::collections::HashSet;
+        let new_names: HashSet<String> = cfg.services.iter().map(|s| s.name.clone()).collect();
+        for name in self.names() {
+            if new_names.contains(&name) {
+                continue;
+            }
+            // 不在新配置:停(Stopped/Failed 下 no-op)→ 移除
+            if let Err(e) = self.stop(&name).await {
+                tracing::warn!("[supervisor] reload 停止 '{name}' 失败(保留句柄):{e}");
+                continue;
+            }
+            self.handles.remove(&name);
+            tracing::info!("[supervisor] reload 移除服务 '{name}'(不在新配置,已优雅停止)");
         }
-    }
-
-    fn read_desired_map(p: &Path) -> HashMap<String, bool> {
-        std::fs::read_to_string(p)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    }
-
-    /// 标记服务的期望运行状态并落盘(data_dir 未配置则跳过)。
-    pub fn set_desired(&self, name: &str, running: bool) {
-        if let Some(p) = self.desired_path() {
-            let mut m = Self::read_desired_map(&p);
-            m.insert(name.to_string(), running);
-            match serde_json::to_string_pretty(&m) {
-                Ok(s) => {
-                    if let Err(e) = std::fs::write(&p, s) {
-                        tracing::warn!("[supervisor] desired 落盘失败:{e}");
-                    }
-                }
-                Err(e) => tracing::warn!("[supervisor] desired 序列化失败:{e}"),
+        for svc in &cfg.services {
+            if self.handles.contains_key(&svc.name) {
+                let _ = self.update(svc.clone());
+            } else if let Err(e) = self.add(svc.clone()) {
+                tracing::warn!("[supervisor] reload 添加服务 '{}' 失败:{e}", svc.name);
             }
         }
-    }
-
-    /// 启动 desired=true 且当前未运行的服务(daemon 启动时在 start_auto 之后调用,
-    /// 按优先级顺序 + 就绪推进,恢复语义与手动 start_all 一致)。
-    pub async fn start_desired(&self) {
-        let Some(p) = self.desired_path() else {
-            return;
-        };
-        let desired = Self::read_desired_map(&p);
-        self.start_ordered(|h| {
-            let name = h.inner.lock().unwrap().config.name.clone();
-            desired.get(&name).copied().unwrap_or(false)
-        })
-        .await;
     }
 
     pub fn status(&self, name: &str) -> WResult<ServiceStatus> {
@@ -321,25 +312,6 @@ impl Supervisor {
 
     pub fn log_hub(&self, name: &str) -> WResult<Arc<LogHub>> {
         Ok(Arc::clone(&self.get(name)?.log))
-    }
-
-    /// 增量同步配置:添加新服务,移除已停止且不在新配置的服务(运行中保留)。
-    pub fn apply_config(&self, cfg: &Config) {
-        use std::collections::HashSet;
-        let new_names: HashSet<String> = cfg.services.iter().map(|s| s.name.clone()).collect();
-        self.handles.retain(|name, h| {
-            if new_names.contains(name) {
-                return true;
-            }
-            // 不在新配置:仅当非活跃(Stopped/Failed)时移除
-            let g = h.inner.lock().unwrap();
-            matches!(g.state, ProcState::Stopped | ProcState::Failed { .. })
-        });
-        for svc in &cfg.services {
-            if !self.handles.contains_key(&svc.name) {
-                self.add(svc.clone());
-            }
-        }
     }
 
     pub fn names(&self) -> Vec<String> {
@@ -510,6 +482,7 @@ pub struct ServiceStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn svc(name: &str, priority: u32) -> ServiceConfig {
         ServiceConfig {
@@ -536,18 +509,18 @@ mod tests {
     #[test]
     fn start_order_sorts_by_priority_then_name() {
         let sv = Supervisor::new(PathBuf::from(""));
-        sv.add(svc("a", 20));
-        sv.add(svc("b", 10));
-        sv.add(svc("c", 10)); // 与 b 同 priority,按 name 字典序
+        sv.add(svc("a", 20)).unwrap();
+        sv.add(svc("b", 10)).unwrap();
+        sv.add(svc("c", 10)).unwrap(); // 与 b 同 priority,按 name 字典序
         assert_eq!(sv.ordered_names(false), vec!["b", "c", "a"]);
     }
 
     #[test]
     fn stop_order_is_reverse_of_start_order() {
         let sv = Supervisor::new(PathBuf::from(""));
-        sv.add(svc("a", 20));
-        sv.add(svc("b", 10));
-        sv.add(svc("c", 10));
+        sv.add(svc("a", 20)).unwrap();
+        sv.add(svc("b", 10)).unwrap();
+        sv.add(svc("c", 10)).unwrap();
         assert_eq!(sv.ordered_names(true), vec!["a", "c", "b"]);
     }
 
@@ -562,12 +535,28 @@ mod tests {
     #[test]
     fn group_filter_keeps_priority_order_within_group() {
         let sv = Supervisor::new(PathBuf::from(""));
-        sv.add(svc_in_group("a", 20, Some("g1")));
-        sv.add(svc_in_group("b", 10, Some("g2")));
-        sv.add(svc_in_group("c", 10, Some("g1")));
-        sv.add(svc_in_group("d", 0, None)); // 未分组,不属于任何组
+        sv.add(svc_in_group("a", 20, Some("g1"))).unwrap();
+        sv.add(svc_in_group("b", 10, Some("g2"))).unwrap();
+        sv.add(svc_in_group("c", 10, Some("g1"))).unwrap();
+        sv.add(svc_in_group("d", 0, None)).unwrap(); // 未分组,不属于任何组
         assert_eq!(sv.names_in_group(false, "g1"), vec!["c", "a"]);
         assert_eq!(sv.names_in_group(true, "g1"), vec!["a", "c"]);
         assert!(sv.names_in_group(false, "no-such").is_empty());
+    }
+
+    /// 意图:add 判重是防句柄静默替换的护栏(裸 insert 会把旧监护 task
+    /// 连同进程一起挤出管理),不是可绕过的约定;拒绝后原句柄保持不变。
+    #[test]
+    fn add_rejects_duplicate_and_keeps_original() {
+        let sv = Supervisor::new(PathBuf::from(""));
+        sv.add(svc("a", 20)).unwrap();
+        let err = sv.add(svc("a", 99)).unwrap_err();
+        assert!(
+            matches!(&err, WardenError::InvalidState(n, _) if n == "a"),
+            "重名应 InvalidState,实际:{err:?}"
+        );
+        // 原句柄未被覆盖(priority 仍为 20)
+        let h = sv.handle("a").unwrap();
+        assert_eq!(h.inner.lock().unwrap().config.priority, 20);
     }
 }

@@ -52,6 +52,15 @@ fn default_log_dir() -> String {
     "./logs".into()
 }
 
+/// 默认配置文件名(查找链与 CRUD 兜底创建共用;桌面版另用 services.desktop.toml)。
+pub const CONFIG_FILE_NAME: &str = "services.toml";
+
+/// 未找到任何配置文件时,CRUD 首次写回的默认创建路径(cwd 下,与查找链第 3 级
+/// 一致,后续启动可被重新找到)。
+pub fn default_config_create_path() -> PathBuf {
+    PathBuf::from("config").join(CONFIG_FILE_NAME)
+}
+
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
@@ -131,19 +140,19 @@ impl Config {
             .ok()
             .and_then(|p| p.parent().map(Path::to_path_buf))
         {
-            let p = exe.join("config").join("services.toml");
+            let p = exe.join("config").join(CONFIG_FILE_NAME);
             if p.exists() {
                 return Some(p);
             }
         }
         // 3. ./config/services.toml
-        let p = PathBuf::from("config").join("services.toml");
+        let p = default_config_create_path();
         if p.exists() {
             return Some(p);
         }
         // 4. 平台标准位置(用户级)
         if let Some(proj) = directories::ProjectDirs::from("io", "warden", "warden") {
-            let p = proj.config_dir().join("services.toml");
+            let p = proj.config_dir().join(CONFIG_FILE_NAME);
             if p.exists() {
                 return Some(p);
             }

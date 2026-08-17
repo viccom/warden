@@ -2,15 +2,18 @@
 //!
 //! 路由前缀 `/api/v1`。鉴权用静态 token(`daemon.auth_token` 非空时生效),
 //! `/api/v1/health` 放白名单。设计见 docs/DESIGN.md §8。
+//!
+//! 数据源约定:配置文件是服务定义的**唯一数据源**——CRUD 直接写回文件
+//! (`config_edit`,toml_edit 保注释),内存(Supervisor)随之同步;
+//! 无 overlay、无 desired_state(旧文件由 `config_edit::migrate_legacy_sources`
+//! 一次性迁移)。
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use axum::Router;
 
 use crate::config::Config;
-use crate::model::ServiceConfig;
 use crate::supervisor::Supervisor;
 
 pub mod auth;
@@ -19,9 +22,6 @@ pub mod routes_logs;
 pub mod routes_service;
 pub mod routes_ui;
 
-/// 运行时 CRUD 服务 overlay 文件名(存 data_dir 下,不动主配置文件)。
-pub const RUNTIME_SERVICES_FILE: &str = "runtime_services.toml";
-
 /// 贯穿所有 handler 的共享状态。
 #[derive(Clone)]
 pub struct AppState {
@@ -29,14 +29,25 @@ pub struct AppState {
     pub config_path: Option<PathBuf>,
     pub auth_token: Option<String>,
     pub version: &'static str,
-    /// data_dir(空 = 未配置,CRUD/desired 仅内存生效)。
+    /// data_dir(空 = 未配置,仅内存生效)。
     pub data_dir: PathBuf,
-    /// 运行时增改的服务 registry(CRUD 持久化的数据源)。
-    pub runtime_services: Arc<Mutex<Vec<ServiceConfig>>>,
+    /// 配置文件写互斥锁(CRUD 进程内单写者,防并发编辑交错)。
+    pub config_edit_lock: Arc<Mutex<()>>,
+}
+
+impl AppState {
+    /// CRUD 写回目标配置文件:显式/已定位的配置文件;全无则默认创建路径
+    /// (`config/services.toml`,与查找链第 3 级一致)。
+    pub fn effective_config_path(&self) -> PathBuf {
+        self.config_path
+            .clone()
+            .unwrap_or_else(crate::config::default_config_create_path)
+    }
 }
 
 /// 从配置构建 AppState + Supervisor(不启动 auto_start,由调用方决定)。
-/// 顺序:烘入 daemon 全局 env → merge 运行时 overlay(按 name 覆盖)→ 建句柄。
+/// 顺序:烘入 daemon 全局 env → 解析配置路径(显式 → find 查找)→
+/// 旧双源文件一次性迁移 → 建句柄。
 pub fn build_state(cfg: Config, config_path: Option<PathBuf>) -> AppState {
     let mut cfg = cfg;
     cfg.apply_daemon_env();
@@ -45,9 +56,12 @@ pub fn build_state(cfg: Config, config_path: Option<PathBuf>) -> AppState {
     } else {
         PathBuf::from(&cfg.daemon.data_dir)
     };
-    // 运行时 overlay:CRUD 增改的服务按 name 覆盖主配置(重启后恢复)
-    let runtime_services = read_runtime_services(&data_dir);
-    merge_runtime(&mut cfg, &runtime_services);
+    // CLI/Service 未显式传路径时,补上 find 链实际命中的文件(CRUD/reload 的写读目标)
+    let config_path = config_path.or_else(Config::find_config_path);
+    // 旧 runtime overlay / desired_state 一次性迁入配置文件(存在才动)
+    let config_path = crate::config_edit::migrate_legacy_sources(&mut cfg, config_path, &data_dir);
+    // 迁移可能替换了 services(未烘 env),再烘一次(幂等)
+    cfg.apply_daemon_env();
     let supervisor = Arc::new(Supervisor::from_config(&cfg, data_dir.clone()));
     let auth_token = if cfg.daemon.auth_token.is_empty() {
         None
@@ -60,50 +74,7 @@ pub fn build_state(cfg: Config, config_path: Option<PathBuf>) -> AppState {
         auth_token,
         version: crate::VERSION,
         data_dir,
-        runtime_services: Arc::new(Mutex::new(runtime_services)),
-    }
-}
-
-/// 读取 data_dir/runtime_services.toml(不存在/解析失败返回空并 warn)。
-fn read_runtime_services(data_dir: &std::path::Path) -> Vec<ServiceConfig> {
-    if data_dir.as_os_str().is_empty() {
-        return Vec::new();
-    }
-    let p = data_dir.join(RUNTIME_SERVICES_FILE);
-    match std::fs::read_to_string(&p) {
-        Ok(s) => match toml::from_str::<HashMap<String, Vec<ServiceConfig>>>(&s) {
-            Ok(m) => m.into_iter().next().map(|(_, v)| v).unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!("[api] 运行时服务文件解析失败({}):{e}", p.display());
-                Vec::new()
-            }
-        },
-        Err(_) => Vec::new(),
-    }
-}
-
-/// overlay 按覆盖主配置(运行时增改优先)。
-fn merge_runtime(cfg: &mut Config, runtime: &[ServiceConfig]) {
-    for svc in runtime {
-        if let Some(existing) = cfg.services.iter_mut().find(|s| s.name == svc.name) {
-            *existing = svc.clone();
-        } else {
-            cfg.services.push(svc.clone());
-        }
-    }
-}
-
-/// 把 registry 持久化到 data_dir/runtime_services.toml(原子性:直接写,文件小)。
-pub fn persist_runtime(state: &AppState) {
-    if state.data_dir.as_os_str().is_empty() {
-        tracing::warn!("[api] data_dir 未配置,运行时变更仅内存生效(重启丢失)");
-        return;
-    }
-    let list = state.runtime_services.lock().unwrap().clone();
-    let toml = toml::to_string(&HashMap::from([("service", list)])).unwrap_or_default();
-    let p = state.data_dir.join(RUNTIME_SERVICES_FILE);
-    if let Err(e) = std::fs::write(&p, toml) {
-        tracing::warn!("[api] 运行时服务落盘失败({}):{e}", p.display());
+        config_edit_lock: Arc::new(Mutex::new(())),
     }
 }
 
@@ -179,6 +150,26 @@ pub fn build_router(state: AppState) -> Router {
         ))
         // CORS 在 auth 外层:预检(OPTIONS)由 CORS 直接应答,不进鉴权
         .layer(tauri_cors())
-        .layer(tower_http::trace::TraceLayer::new_for_http())
+        // 请求级日志提到 INFO(TraceLayer 默认 DEBUG 会被 EnvFilter=info 滤掉):
+        // 每个请求一行(span 带 method/path,response 事件带 status/耗时),现场排障关键线索
+        .layer(tower_http::trace::TraceLayer::new_for_http()
+            .make_span_with(|req: &axum::http::Request<axum::body::Body>| {
+                tracing::info_span!("http", method = %req.method(), path = %req.uri().path())
+            })
+            .on_response(log_response))
         .with_state(state)
+}
+
+/// 每响应一行 INFO(method/path 在 span 上下文里):具名泛型函数满足
+/// tower-http OnResponse 的高阶生命周期约束(闭包写法会撞 FnOnce 不够泛)。
+fn log_response<B>(
+    resp: &axum::http::Response<B>,
+    latency: std::time::Duration,
+    _span: &tracing::Span,
+) {
+    tracing::info!(
+        status = resp.status().as_u16(),
+        latency_ms = latency.as_millis() as u64,
+        "response"
+    );
 }

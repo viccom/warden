@@ -111,6 +111,28 @@ async fn quick_exit_with_restart_hits_limit() {
     assert_eq!(st.restart_count, 2, "应在重试 2 次后熔断");
 }
 
+/// 意图:command 不存在时 spawn 失败 → Failed(带原因);且零重试——
+/// auto_restart=true 也不进重启决策(坏路径重试无意义),restart_count 保持 0。
+#[tokio::test]
+async fn start_nonexistent_command_fails_without_retry() {
+    let sv = supervisor_with(make_config("ghost", "warden-no-such-cmd", vec![], true, 3));
+
+    sv.start("ghost").await.unwrap();
+    wait_for_state(&sv, "ghost", "failed", Duration::from_secs(5)).await;
+
+    let st = sv.status("ghost").unwrap();
+    assert_eq!(st.restart_count, 0, "spawn 失败不进重启决策(零重试)");
+    match st.state {
+        warden::model::ProcState::Failed { reason, .. } => {
+            assert!(
+                reason.contains("spawn 失败"),
+                "原因应含 'spawn 失败':{reason}"
+            );
+        }
+        other => panic!("应为 Failed,实际:{other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn start_unknown_service_returns_not_found() {
     let sv = Supervisor::new(PathBuf::from(""));
@@ -125,7 +147,7 @@ async fn start_unknown_service_returns_not_found() {
 async fn list_reports_all_registered() {
     let (cmd, args) = common::long_runner();
     let sv = supervisor_with(make_config("a", &cmd, args.clone(), false, 3));
-    sv.add(make_config("b", &cmd, args, false, 3));
+    sv.add(make_config("b", &cmd, args, false, 3)).unwrap();
     let mut names: Vec<_> = sv.list().into_iter().map(|s| s.name).collect();
     names.sort(); // DashMap 无序,排序后比较
     assert_eq!(names, vec!["a", "b"]);
@@ -166,4 +188,51 @@ async fn metrics_sampled_for_running_process() {
     assert!(st.metrics.memory_kb > 0, "memory 应为非零");
 
     sv.stop("m").await.unwrap();
+}
+
+/// 意图:reload(apply_config)的唯一数据源语义——消失的服务优雅停止后移除
+/// (不制造脱离管理的孤儿句柄)、新服务注册(不启动)。旧实现的 retain 条件
+/// 写反(运行中被移出管理表、已停止的被保留),由本测试钉死正确语义。
+#[tokio::test]
+async fn apply_config_stops_and_removes_disappeared_services() {
+    let (cmd, args) = common::long_runner();
+    let sv = supervisor_with(make_config("run-a", &cmd, args, false, 3));
+    sv.add(make_config("idle-b", "whatever", vec![], false, 3))
+        .unwrap();
+    sv.start("run-a").await.unwrap();
+    wait_for_state(&sv, "run-a", "running", Duration::from_secs(5)).await;
+
+    // 新配置:只剩 new-c(全新)——run-a(运行中)与 idle-b(已停止)都消失
+    let new_cfg = Config {
+        services: vec![make_config("new-c", "whatever2", vec![], false, 3)],
+        ..Default::default()
+    };
+    sv.apply_config(&new_cfg).await;
+
+    assert!(sv.status("run-a").is_err(), "运行中的 run-a 应被停止并移除");
+    assert!(sv.status("idle-b").is_err(), "已停止的 idle-b 应被移除");
+    // new-c 注册且未启动(auto_start=false,启动由编排决定)
+    assert_eq!(
+        sv.status("new-c").unwrap().state.name(),
+        "stopped",
+        "新服务应注册但不自动启动"
+    );
+    assert_eq!(sv.names(), vec!["new-c"]);
+}
+
+/// 意图:reload 对同名服务做配置原位替换(运行中保留进程,下次启动生效)。
+#[tokio::test]
+async fn apply_config_updates_existing_service_config() {
+    let (cmd, args) = common::long_runner();
+    let sv = supervisor_with(make_config("keep", &cmd, args, false, 3));
+    let mut changed = make_config("keep", "other-cmd", vec![], false, 3);
+    changed.priority = 9;
+    sv.apply_config(&Config {
+        services: vec![changed],
+        ..Default::default()
+    })
+    .await;
+    let st = sv.status("keep").unwrap();
+    assert_eq!(st.priority, 9, "reload 应替换同名服务配置");
+    assert_eq!(st.state.name(), "stopped");
 }

@@ -35,6 +35,9 @@ pub async fn auth_middleware(
     if ok {
         next.run(req).await
     } else {
+        // INFO 级落日志:桌面版 WebView 会话/多节点配错 token 时,现场可从
+        // 日志直接定位(401 在 UI 只表现为"无权限/保存失败",无详情)
+        tracing::info!("[auth] 拒绝 {} {}(token 无效或缺失)", req.method(), path);
         (StatusCode::UNAUTHORIZED, "invalid or missing token").into_response()
     }
 }

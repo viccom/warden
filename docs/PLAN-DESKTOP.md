@@ -38,7 +38,7 @@ warden/                     # 现有 crate 不动,root Cargo.toml 追加 [worksp
 - 单实例:二次启动聚焦已有窗口(tauri-plugin-single-instance 必须最先注册)
 - 开机自启:不做(需求明确不需要 OS service;Tauri autostart 插件留作 P2)
 
-**配置**:内嵌 daemon 用与 CLI 相同的 `Config::find` 路径规则(`$WARDEN_CONFIG` → exe_dir → cwd → 平台配置),桌面版与 CLI 版共用同一份 services.toml 语义;data_dir/log_dir 同规则。
+**配置**:(2026-08-17 更新)内嵌 daemon 默认配置文件名独立为 `services.desktop.toml`,查找链 `$WARDEN_CONFIG` → `<exe_dir>/config/` → `<app_data>/config/`(不落 cwd 与 CLI 平台位置,防拾取 CLI 的 services.toml;格式与 CLI 完全兼容);`config_path` 传解析路径,API reload 重读同一文件。data_dir/log_dir 仍重定向桌面应用数据目录。
 
 ## 3. daemon 侧扩展(P1 前置,TDD)
 
@@ -66,7 +66,7 @@ P2(后续,不在本次):metrics 历史图表、系统通知(健康迁移)、自�
 |---|---|---|
 | R1 | Tauri 编译链较长(首次全量编译数分钟) | 接受;debug 迭代用 vite HMR + `tauri dev` |
 | R2 | 内嵌 daemon 随机 token 的传递 | 启动时 Tauri event `warden://ready` 携带 {port, token},前端初始化本地节点 |
-| R3 | CLI 版 warden 与桌面版同机并存 | 端口不同(随机 vs 8789)互不冲突;共用配置文件时由用户自己区分(文档提示) |
+| R3 | CLI 版 warden 与桌面版同机并存 | 端口不同(随机 vs 8789)互不冲突;默认配置文件名已隔离(CLI `services.toml` vs 桌面 `services.desktop.toml`,2026-08-17),共用配置需显式 `$WARDEN_CONFIG` 指向同一文件 |
 | R4 | 组名含 `/`(路径参数冲突) | 组级 API 用 URL 编码;组名约束在 validate_service 增加(禁 `/`)——CRUD 校验顺带收紧 |
 
 ## 6. 实施顺序(P1)
