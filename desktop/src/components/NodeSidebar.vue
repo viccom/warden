@@ -1,7 +1,7 @@
 <script setup>
 import { computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { store, allNodes, reloadNodes } from '../store';
+import { store, allNodes, reloadNodes, toggleTheme } from '../store';
 
 defineEmits(['quit']);
 
@@ -30,6 +30,9 @@ async function del(n) {
     <div class="head">
       <span class="logo">warden</span>
       <span class="ver">桌面版</span>
+      <button class="theme-toggle" :title="store.theme === 'light' ? '切换到暗色' : '切换到浅色'" @click="toggleTheme">
+        {{ store.theme === 'light' ? '☾' : '☀' }}
+      </button>
     </div>
 
     <div class="nodes">
@@ -87,6 +90,15 @@ aside {
   gap: 8px;
   padding: 16px 16px 12px;
 }
+.head .theme-toggle {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid transparent;
+  font-size: 14px;
+  padding: 2px 6px;
+  line-height: 1;
+}
+.head .theme-toggle:hover { color: var(--accent); border-color: var(--accent); }
 .logo { font-size: 18px; font-weight: 700; }
 .ver { font-size: 12px; color: var(--text-dim); }
 .nodes { flex: 1; overflow-y: auto; padding: 0 10px; display: flex; flex-direction: column; gap: 4px; }
@@ -115,7 +127,7 @@ aside {
 .tag {
   font-size: 10px;
   background: var(--accent-dim);
-  color: #cfe0ff;
+  color: var(--accent-text);
   border-radius: 4px;
   padding: 0 4px;
 }
