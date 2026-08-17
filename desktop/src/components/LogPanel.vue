@@ -175,7 +175,7 @@ function timeOf(l) {
 }
 .empty { color: var(--text-dim); padding: 20px; text-align: center; }
 .line { white-space: pre-wrap; word-break: break-all; padding: 1px 0; color: var(--text); }
-.line.stderr { color: #e8a1a1; }
+.line.stderr { color: var(--log-stderr); }
 .line.error { color: var(--red); }
 .line.warn { color: var(--yellow); }
 .line.debug { color: var(--text-dim); }

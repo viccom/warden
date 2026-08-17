@@ -204,12 +204,12 @@ async function save(doFormat) {
   user-select: text;
 }
 /* v-html 注入的 span 不带 scoped 属性,必须 :deep() 穿透(否则着色全丢) */
-.code.hl :deep(.tk-com) { color: #6b7385; font-style: italic; }
-.code.hl :deep(.tk-str) { color: #8fd18f; }
-.code.hl :deep(.tk-key) { color: #7fb3ff; }
-.code.hl :deep(.tk-sec) { color: #e8b339; font-weight: 600; }
-.code.hl :deep(.tk-num) { color: #d9a0e0; }
-.code.hl :deep(.tk-bool) { color: #e0917f; }
+.code.hl :deep(.tk-com) { color: var(--tk-com); font-style: italic; }
+.code.hl :deep(.tk-str) { color: var(--tk-str); }
+.code.hl :deep(.tk-key) { color: var(--tk-key); }
+.code.hl :deep(.tk-sec) { color: var(--tk-sec); font-weight: 600; }
+.code.hl :deep(.tk-num) { color: var(--tk-num); }
+.code.hl :deep(.tk-bool) { color: var(--tk-bool); }
 .actions { justify-content: flex-end; }
 .hint { margin-right: auto; font-size: 12px; color: var(--text-dim); }
 </style>
