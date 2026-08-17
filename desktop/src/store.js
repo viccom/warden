@@ -16,6 +16,7 @@ export const store = reactive({
   nodeDialog: false,  // 添加节点对话框
   serviceForm: null,  // {mode:'create'|'edit', nodeUrl, name?}
   configEditor: null, // {nodeUrl, name} 配置文件编辑器
+  theme: 'dark',       // 'dark' | 'light',搭车 warden_prefs 持久化
 });
 
 /// 本地 + 远程全部节点。
@@ -75,6 +76,7 @@ function loadPrefs() {
     const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
     if (p.nodeFilter) store.nodeFilter = p.nodeFilter;
     if (p.group) store.group = p.group;
+    if (p.theme === 'light') store.theme = 'light';
   } catch { /* 坏数据忽略,用默认 */ }
 }
 
@@ -82,13 +84,24 @@ function savePrefs() {
   try {
     localStorage.setItem(
       PREFS_KEY,
-      JSON.stringify({ nodeFilter: store.nodeFilter, group: store.group })
+      JSON.stringify({ nodeFilter: store.nodeFilter, group: store.group, theme: store.theme })
     );
   } catch { /* 存储满等异常忽略 */ }
 }
 
+export function applyTheme(t) {
+  store.theme = t;
+  if (t === 'light') document.documentElement.dataset.theme = 'light';
+  else delete document.documentElement.dataset.theme;
+}
+
+export function toggleTheme() {
+  applyTheme(store.theme === 'light' ? 'dark' : 'light');
+}
+
 export async function initStore() {
   loadPrefs();
+  applyTheme(store.theme);
   store.local = await invoke('local_node_info');
   store.nodes = await invoke('nodes_list');
   await refreshOnce();
@@ -99,7 +112,7 @@ export async function initStore() {
   const valid = new Set(['ALL', 'UNGROUPED', ...groupsOfVisible().map(g => g.name)]);
   if (!valid.has(store.group)) store.group = 'ALL';
   store.ready = true;
-  watch(() => [store.nodeFilter, store.group], savePrefs);
+  watch(() => [store.nodeFilter, store.group, store.theme], savePrefs);
   setInterval(refreshOnce, 2000);
 }
 
