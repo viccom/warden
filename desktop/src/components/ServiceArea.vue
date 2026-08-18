@@ -1,11 +1,16 @@
 <script setup>
 import { computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { store, visibleServices, groupsOfVisible, groupAction, serviceAction, tokenOf } from '../store';
+import { store, visibleServices, groupsOfVisible, groupAction, serviceAction, tokenOf, nodeOnline } from '../store';
 import { clientFor, showToast } from '../api';
 
 const groups = computed(() => groupsOfVisible());
 const services = computed(() => visibleServices());
+
+// 当前过滤选中的具体节点是否离线(全部启停/空列表提示用)
+const filterOffline = computed(() =>
+  store.nodeFilter !== 'ALL' && !nodeOnline(store.nodeFilter)
+);
 
 const stateName = s => s?.state?.state || 'unknown';
 const isRun = s => stateName(s) === 'running';
@@ -57,9 +62,15 @@ function metaLine(s) {
   ].filter(Boolean).join(' · ');
 }
 
+// 新增服务的目标节点:选中的具体节点,否则内嵌(退而求其次第一个远程)
+function createTarget() {
+  return store.nodeFilter !== 'ALL' ? store.nodeFilter : (store.local?.url || store.nodes[0]?.url || null);
+}
+
 async function createService() {
-  if (!store.nodes.length && !store.local) return;
-  store.serviceForm = { mode: 'create', nodeUrl: store.nodeFilter !== 'ALL' ? store.nodeFilter : (store.local?.url || store.nodes[0].url) };
+  const target = createTarget();
+  if (!target || !nodeOnline(target)) return;
+  store.serviceForm = { mode: 'create', nodeUrl: target };
 }
 </script>
 
@@ -92,15 +103,29 @@ async function createService() {
       </div>
       <div class="ops">
         <input v-model="store.keyword" placeholder="搜索服务名…" class="search" />
-        <button @click="createService">＋ 新增服务</button>
-        <button @click="groupAction('__all__', 'start')">全部启动</button>
-        <button @click="groupAction('__all__', 'stop')">全部停止</button>
+        <button
+          :disabled="!nodeOnline(createTarget())"
+          :title="nodeOnline(createTarget()) ? '' : '目标节点连接失败,不可新增服务'"
+          @click="createService"
+        >＋ 新增服务</button>
+        <button
+          :disabled="filterOffline"
+          :title="filterOffline ? '节点连接失败,不可操作' : ''"
+          @click="groupAction('__all__', 'start')"
+        >全部启动</button>
+        <button
+          :disabled="filterOffline"
+          :title="filterOffline ? '节点连接失败,不可操作' : ''"
+          @click="groupAction('__all__', 'stop')"
+        >全部停止</button>
       </div>
     </div>
 
     <div class="cards">
       <div v-if="!services.length" class="empty">
-        无匹配服务 —— 可在左侧添加节点,或点「＋ 新增服务」
+        {{ filterOffline
+          ? '节点连接失败,无法读取服务列表(可删除该节点或稍后重试)'
+          : '无匹配服务 —— 可在左侧添加节点,或点「＋ 新增服务」' }}
       </div>
       <div
         v-for="s in services"
@@ -159,7 +184,7 @@ async function createService() {
 .chip .gops { display: none; gap: 2px; }
 .chip.group:hover .gops { display: inline-flex; }
 .mini { padding: 0 5px; font-size: 10px; line-height: 16px; }
-.ops { display: flex; gap: 8px; align-items: center; }
+.ops { display: flex; gap: 8px; align-items: center; margin-left: auto; flex-wrap: nowrap; }
 .search { width: 180px; }
 
 .cards { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }

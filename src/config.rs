@@ -40,6 +40,9 @@ pub struct DaemonConfig {
     /// 全局环境变量:注入所有被监护进程(service 同名 key 覆盖全局)。
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// 窗口/标题栏名称(桌面版消费:标题栏与任务栏标题;CLI 忽略)。空 = 默认名。
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 fn default_api_bind() -> String {
@@ -70,6 +73,7 @@ impl Default for DaemonConfig {
             log_dir: default_log_dir(),
             alert_webhook: None,
             env: HashMap::new(),
+            title: None,
         }
     }
 }
@@ -313,6 +317,17 @@ command = "/bin/true"
     fn invalid_toml_returns_error() {
         let res = Config::parse("this is not = = valid toml [[[[");
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn daemon_title_parse_and_default() {
+        // 缺省 None(桌面版前端回退默认名;CLI 不消费此字段)
+        let cfg = Config::parse("[daemon]\napi_bind = \"127.0.0.1:0\"\n").unwrap();
+        assert!(cfg.daemon.title.is_none());
+        let cfg =
+            Config::parse("[daemon]\napi_bind = \"127.0.0.1:0\"\ntitle = \"rs-iot 现场监护\"\n")
+                .unwrap();
+        assert_eq!(cfg.daemon.title.as_deref(), Some("rs-iot 现场监护"));
     }
 
     #[test]

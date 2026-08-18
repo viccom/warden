@@ -2,6 +2,7 @@
 import { onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { store, initStore } from './store';
+import TitleBar from './components/TitleBar.vue';
 import NodeSidebar from './components/NodeSidebar.vue';
 import ServiceArea from './components/ServiceArea.vue';
 import LogPanel from './components/LogPanel.vue';
@@ -25,19 +26,22 @@ async function quit() {
 </script>
 
 <template>
-  <div class="app" v-if="store.ready">
-    <NodeSidebar @quit="quit" />
-    <main>
-      <ServiceArea />
-      <LogPanel />
-    </main>
-    <NodeDialog v-if="store.nodeDialog" />
-    <ServiceForm v-if="store.serviceForm" />
-    <ConfigEditor v-if="store.configEditor" />
-  </div>
-  <div class="booting" v-else>
-    <div class="spinner"></div>
-    <div>正在启动内嵌 daemon…</div>
+  <div class="shell">
+    <TitleBar />
+    <div class="app" v-if="store.ready">
+      <NodeSidebar @quit="quit" />
+      <main>
+        <ServiceArea />
+        <LogPanel />
+      </main>
+      <NodeDialog v-if="store.nodeDialog" />
+      <ServiceForm v-if="store.serviceForm" />
+      <ConfigEditor v-if="store.configEditor" />
+    </div>
+    <div class="booting" v-else>
+      <div class="spinner"></div>
+      <div>正在启动内嵌 daemon…</div>
+    </div>
   </div>
 </template>
 

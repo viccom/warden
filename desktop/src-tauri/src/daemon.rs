@@ -6,7 +6,8 @@
 //! - data_dir/log_dir 重定向到桌面应用数据目录(与 CLI 隔离:
 //!   两版各自的配置文件/数据/日志互不干扰)
 //! - 默认配置文件名独立(`services.desktop.toml`,与 CLI 的 `services.toml`
-//!   区分;查找链不落 cwd 与 CLI 平台位置,防止拾取 CLI 配置)
+//!   区分;查找链不取 cwd 根与 CLI 平台位置,防止拾取 CLI 配置;
+//!   仅认 cwd 下的 `./warden/config/` 子路径)
 //! - 无 console 信号处理(退出由托盘/命令触发 shutdown token)
 //! - 配置缺失不退出(空配置起步,服务经 CRUD 添加——写回时创建配置文件)
 //!
@@ -24,13 +25,19 @@ const DESKTOP_CONFIG_FILE: &str = "services.desktop.toml";
 /// 解析桌面版配置路径(纯函数便于测试):
 /// 1. `$WARDEN_CONFIG`(显式指定;不存在则跳过)
 /// 2. `<exe_dir>/config/services.desktop.toml`(绿色部署:配置随程序走)
-/// 3. `<app_data>/config/services.desktop.toml`(标准可写位置,找不到时的默认)
+/// 3. `<cwd>/warden/config/services.desktop.toml`(启动器/脚本以部署根为 cwd 时:
+///    程序放 `<部署根>/warden/`、配置在 `<部署根>/warden/config/` 的布局)
+/// 4. `<app_data>/config/services.desktop.toml`(标准可写位置,找不到时的默认)
 ///
-/// 不回落到 cwd / CLI 平台位置——桌面版 cwd 随启动方式漂移,且不应拾取
-/// CLI 的 services.toml。
+/// 不回落到 cwd 根 / CLI 平台位置——桌面版不应拾取 CLI 的 services.toml。
+///
+/// 解析后 daemon::start 会把进程 cwd 锚定到 [`config_base_dir`]:配置内相对
+/// working_dir/command(`../bin/xxx` 等)一律相对配置基准目录,与启动方式解耦
+/// (exe 放部署根 / 快捷方式任意起始位置 / 脚本任意 cd 均一致)。
 fn resolve_config_path(
     env_cfg: Option<PathBuf>,
     exe_dir: Option<PathBuf>,
+    cwd: Option<PathBuf>,
     app_data: &Path,
 ) -> PathBuf {
     if let Some(p) = env_cfg {
@@ -44,7 +51,33 @@ fn resolve_config_path(
             return p;
         }
     }
+    if let Some(dir) = cwd {
+        let p = dir.join("warden").join("config").join(DESKTOP_CONFIG_FILE);
+        if p.exists() {
+            return p;
+        }
+    }
     app_data.join("config").join(DESKTOP_CONFIG_FILE)
+}
+
+/// 配置基准目录(配置内相对路径的锚点;纯函数便于测试):
+/// - 文件不存在 → None(空配置起步不锚定,保持启动器 cwd)
+/// - 文件在 `<base>/config/` 下 → `<base>`(两条查找链的布局:`../xxx` 相对 base)
+/// - 其他位置(如 `$WARDEN_CONFIG` 任意路径) → 文件所在目录
+///
+/// 配合 daemon::start 的 set_current_dir:无论 exe 放哪、快捷方式「起始位置」是什么,
+/// 配置内相对 working_dir/command 都锚定配置所在目录——spawn 的 cwd 相对解析
+/// (CreateProcess 语义)因此与启动方式解耦。
+fn config_base_dir(cfg_path: &Path) -> Option<PathBuf> {
+    if !cfg_path.exists() {
+        return None;
+    }
+    let parent = cfg_path.parent()?;
+    if parent.file_name().is_some_and(|n| n == "config") {
+        parent.parent().map(Path::to_path_buf)
+    } else {
+        Some(parent.to_path_buf())
+    }
 }
 
 /// 起内嵌 daemon(阻塞直到 listener 就绪),返回端口/token 与停止句柄。
@@ -66,7 +99,19 @@ pub fn start(app_data: &Path) -> anyhow::Result<EmbeddedDaemon> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf));
-    let cfg_path = resolve_config_path(env_cfg, exe_dir, app_data);
+    let cwd = std::env::current_dir().ok();
+    let cfg_path = resolve_config_path(env_cfg, exe_dir, cwd, app_data);
+    // cwd 锚定:在配置已解析之后(上面 cwd 查找用原始 cwd)、加载之前,把进程
+    // cwd 固定到配置基准目录——配置内相对路径(../bin/xxx 等)不再随启动方式漂移。
+    // 失败仅 warn 不致命(极端:基准目录被删,退回启动器 cwd 语义)。
+    if let Some(base) = config_base_dir(&cfg_path) {
+        if let Err(e) = std::env::set_current_dir(&base) {
+            tracing::warn!(
+                "[warden-desktop] cwd 锚定到 {} 失败({e}),相对路径按启动 cwd 解析",
+                base.display()
+            );
+        }
+    }
     let mut cfg = if cfg_path.exists() {
         tracing::info!("[warden-desktop] 加载配置 {}", cfg_path.display());
         warden::config::Config::load(Some(&cfg_path)).unwrap_or_else(|e| {
@@ -155,29 +200,56 @@ mod tests {
     }
 
     /// 意图:桌面版默认配置解析必须与 CLI 隔离——仅认 $WARDEN_CONFIG /
-    /// exe_dir / app_data 三处,默认名固定 services.desktop.toml,
-    /// 绝不落到 cwd 或 CLI 的平台位置(services.toml)。
+    /// exe_dir / cwd 下 ./warden/config / app_data 四处,默认名固定
+    /// services.desktop.toml,绝不落到 CLI 的平台位置(services.toml)。
     #[test]
-    fn resolve_config_path_env_then_exe_then_app_data() {
+    fn resolve_config_path_env_then_exe_then_cwd_then_app_data() {
         let tmp = std::env::temp_dir().join(format!("warden-desktop-cfg-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let app_data = tmp.join("appdata");
 
         // 全缺 → app_data 默认路径
-        let p = resolve_config_path(None, None, &app_data);
+        let p = resolve_config_path(None, None, None, &app_data);
         assert_eq!(p, app_data.join("config").join(DESKTOP_CONFIG_FILE));
 
         // exe_dir 有 → 胜出
         let exe_cfg = touch(&tmp.join("exe").join("config").join(DESKTOP_CONFIG_FILE));
         assert_eq!(
-            resolve_config_path(None, Some(tmp.join("exe")), &app_data),
+            resolve_config_path(
+                None,
+                Some(tmp.join("exe")),
+                Some(tmp.join("empty-cwd")),
+                &app_data
+            ),
             exe_cfg
+        );
+
+        // exe_dir 缺、cwd/warden/config 有 → 胜出(启动器以部署根为 cwd 的布局)
+        let cwd_cfg = touch(
+            &tmp.join("deploy-root")
+                .join("warden")
+                .join("config")
+                .join(DESKTOP_CONFIG_FILE),
+        );
+        assert_eq!(
+            resolve_config_path(
+                None,
+                Some(tmp.join("exe-missing")),
+                Some(tmp.join("deploy-root")),
+                &app_data
+            ),
+            cwd_cfg
         );
 
         // $WARDEN_CONFIG 存在 → 最高优先
         let env_cfg = touch(&tmp.join("env").join("my.toml"));
         assert_eq!(
-            resolve_config_path(Some(env_cfg.clone()), Some(tmp.join("exe")), &app_data),
+            resolve_config_path(
+                Some(env_cfg.clone()),
+                Some(tmp.join("exe")),
+                Some(tmp.join("deploy-root")),
+                &app_data
+            ),
             env_cfg
         );
 
@@ -186,10 +258,50 @@ mod tests {
             resolve_config_path(
                 Some(tmp.join("env").join("missing.toml")),
                 Some(tmp.join("exe")),
+                Some(tmp.join("deploy-root")),
                 &app_data
             ),
             exe_cfg
         );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 意图:配置内相对路径必须锚定配置所在基准目录,与启动 cwd 无关——
+    /// config 子目录剥一层(`<base>/config/x.toml` → `<base>`,查找链布局)、
+    /// 平级文件取所在目录($WARDEN_CONFIG 任意位置)、不存在不锚定、嵌套只剥一层。
+    #[test]
+    fn config_base_dir_anchors_relative_paths() {
+        let tmp = std::env::temp_dir().join(format!("warden-desktop-base-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        // 文件不存在 → None(空配置起步不锚定)
+        assert_eq!(
+            config_base_dir(&tmp.join("nope").join("services.desktop.toml")),
+            None
+        );
+
+        // `<base>/config/x.toml` → `<base>`(exe_dir 与 cwd 两条查找链的布局)
+        let f = touch(
+            &tmp.join("deploy")
+                .join("warden")
+                .join("config")
+                .join(DESKTOP_CONFIG_FILE),
+        );
+        assert_eq!(config_base_dir(&f), Some(tmp.join("deploy").join("warden")));
+
+        // 平级文件($WARDEN_CONFIG 任意路径) → 文件所在目录
+        let f = touch(&tmp.join("anywhere").join("my.toml"));
+        assert_eq!(config_base_dir(&f), Some(tmp.join("anywhere")));
+
+        // 嵌套 config 只剥一层:`<x>/config/config/x.toml` → `<x>/config`
+        let f = touch(
+            &tmp.join("x")
+                .join("config")
+                .join("config")
+                .join(DESKTOP_CONFIG_FILE),
+        );
+        assert_eq!(config_base_dir(&f), Some(tmp.join("x").join("config")));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

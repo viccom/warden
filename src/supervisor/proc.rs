@@ -36,6 +36,14 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
                     crate::logs::LEVEL_ERROR,
                     format!("[warden] spawn 失败:{e}"),
                 );
+                // 同步落文件日志:LogHub 只在 UI/日志 API 可见,warden.log 无痕迹
+                // 会让现场排查(命令不存在/目录无效等)完全无线索。
+                tracing::warn!(
+                    "[warden] 服务 '{}' spawn 失败:{e}(command={}, working_dir={:?})",
+                    cfg.name,
+                    cfg.command,
+                    cfg.working_dir
+                );
                 return;
             }
         };

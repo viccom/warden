@@ -50,6 +50,11 @@ async fn main() {
         unsafe {
             SetConsoleCtrlHandler(Some(handler::on_event), 1);
         }
+        // handler 就绪标记:测试等它落盘后再发停止信号,消除
+        // "CTRL_BREAK 先于 handler 安装到达 → 默认 handler 直接杀进程"的竞态
+        if !marker.is_empty() {
+            let _ = std::fs::write(format!("{marker}.ready"), "");
+        }
         while !handler::GOT.load(std::sync::atomic::Ordering::SeqCst) {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }

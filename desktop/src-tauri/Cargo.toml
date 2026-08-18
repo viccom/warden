@@ -10,6 +10,12 @@ edition = "2021"
 name = "warden_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# 生产构建特性:启用内嵌前端资源(custom protocol)。`cargo tauri build` 自动开启;
+# 裸 `cargo build` 不带此特性 → exe 运行时加载 devUrl(开发服务器)而非内嵌资源 → 白屏。
+# 对齐官方 create-tauri-app 模板约定,DO NOT REMOVE。
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

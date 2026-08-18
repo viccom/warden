@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue';
-import { store, refresh, tokenOf } from '../store';
+import { store, refresh, tokenOf, nodeOnline } from '../store';
 import { clientFor, showToast } from '../api';
 
 const form = store.serviceForm; // {mode, nodeUrl, name?}
@@ -129,6 +129,7 @@ async function save() {
   err.value = '';
   saving.value = true;
   try {
+    if (!nodeOnline(form.nodeUrl)) { err.value = '节点连接失败,无法保存(目标 warden 不在线)'; return; }
     // toCfg 一并入 try:任何字段异常都浮出为可见错误,而非静默无反应
     const cfg = toCfg();
     if (!cfg.name || !cfg.command) { err.value = '名称和可执行文件路径必填'; return; }

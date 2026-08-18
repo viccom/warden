@@ -69,12 +69,25 @@ async fn wait_state(sv: &Supervisor, name: &str, want: &str, timeout: Duration) 
     }
 }
 
+/// 等 helper 安装好 console handler(`<marker>.ready` 落盘)再发停止信号。
+/// 否则高负载下 CTRL_BREAK 可能先于 handler 安装到达,落在默认 handler 上
+/// 直接杀掉 helper,标记不落盘 —— 测的是竞态而非信号链路本身。
+async fn wait_handler_ready(marker: &std::path::Path) {
+    let ready = std::path::PathBuf::from(format!("{}.ready", marker.display()));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !ready.exists() {
+        assert!(Instant::now() < deadline, "helper 未就绪(缺 {ready:?})");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// 标记文件存在 = helper 收到了 CTRL_C_EVENT 并执行了 graceful 代码(非被强杀)。
 #[tokio::test]
 async fn graceful_stop_sends_ctrl_c_and_target_exits_cleanly() {
     let marker =
         std::env::temp_dir().join(format!("warden-graceful-{}.marker", std::process::id()));
     let _ = std::fs::remove_file(&marker);
+    let _ = std::fs::remove_file(format!("{}.ready", marker.to_string_lossy()));
 
     let sv = supervisor_with(svc(
         "g",
@@ -84,6 +97,7 @@ async fn graceful_stop_sends_ctrl_c_and_target_exits_cleanly() {
     ));
     sv.start("g").await.unwrap();
     wait_running(&sv, "g").await;
+    wait_handler_ready(&marker).await;
 
     sv.stop("g").await.unwrap();
     wait_state(&sv, "g", "stopped", Duration::from_secs(8)).await;
@@ -95,18 +109,25 @@ async fn graceful_stop_sends_ctrl_c_and_target_exits_cleanly() {
     let _ = std::fs::remove_file(&marker);
 }
 
-/// 不响应 CTRL_C 的进程(ping)→ graceful_timeout 后被强杀。
+/// 收到信号但不退出的进程(stubborn helper)→ graceful_timeout 后被强杀。
+/// 旧写法用 ping:ping 自带 ctrl 处理器,收到 CTRL_BREAK 会提前优雅退出,
+/// "elapsed >= 900ms(先等超时再杀)"的断言在信号快速投递时被击穿。
 #[tokio::test]
 async fn force_kill_after_graceful_timeout() {
-    let cmd = if cfg!(windows) { "ping" } else { "sleep" };
-    let args: Vec<String> = if cfg!(windows) {
-        vec!["-n".into(), "120".into(), "127.0.0.1".into()]
-    } else {
-        vec!["120".into()]
-    };
-    let sv = supervisor_with(svc("p", cmd, args, 1));
+    let marker =
+        std::env::temp_dir().join(format!("warden-forcekill-{}.marker", std::process::id()));
+    let _ = std::fs::remove_file(&marker);
+    let _ = std::fs::remove_file(format!("{}.ready", marker.to_string_lossy()));
+
+    let sv = supervisor_with(svc(
+        "p",
+        GRACEFUL_TARGET,
+        vec![marker.to_string_lossy().to_string(), "--stubborn".into()],
+        1,
+    ));
     sv.start("p").await.unwrap();
     wait_running(&sv, "p").await;
+    wait_handler_ready(&marker).await;
 
     let start = Instant::now();
     sv.stop("p").await.unwrap();
@@ -121,6 +142,9 @@ async fn force_kill_after_graceful_timeout() {
         "超时强杀应快速完成,实际 {elapsed:?}"
     );
     assert_eq!(sv.status("p").unwrap().state.name(), "stopped");
+    // stubborn helper 收到信号写了标记但仍活着 → 只能是超时强杀终止的
+    assert!(marker.exists(), "stubborn helper 应收到信号并写标记");
+    let _ = std::fs::remove_file(&marker);
 }
 
 /// stubborn helper(收到信号不退)+ 子进程 → force_kill 杀整棵树(Job Object)。
@@ -128,6 +152,7 @@ async fn force_kill_after_graceful_timeout() {
 async fn force_kill_terminates_process_tree() {
     let marker = std::env::temp_dir().join(format!("warden-tree-{}.marker", std::process::id()));
     let _ = std::fs::remove_file(&marker);
+    let _ = std::fs::remove_file(format!("{}.ready", marker.to_string_lossy()));
 
     let sv = supervisor_with(svc(
         "t",
@@ -141,6 +166,7 @@ async fn force_kill_terminates_process_tree() {
     ));
     sv.start("t").await.unwrap();
     wait_running(&sv, "t").await;
+    wait_handler_ready(&marker).await;
     // 给 helper 时间 spawn 孙子进程
     tokio::time::sleep(Duration::from_millis(500)).await;
 

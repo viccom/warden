@@ -29,6 +29,8 @@ pub struct AppState {
     pub config_path: Option<PathBuf>,
     pub auth_token: Option<String>,
     pub version: &'static str,
+    /// 窗口/标题栏名称(桌面版消费;来自 [daemon] title,CLI 场景为 None)。
+    pub title: Option<String>,
     /// data_dir(空 = 未配置,仅内存生效)。
     pub data_dir: PathBuf,
     /// 配置文件写互斥锁(CRUD 进程内单写者,防并发编辑交错)。
@@ -73,6 +75,7 @@ pub fn build_state(cfg: Config, config_path: Option<PathBuf>) -> AppState {
         config_path,
         auth_token,
         version: crate::VERSION,
+        title: cfg.daemon.title.clone(),
         data_dir,
         config_edit_lock: Arc::new(Mutex::new(())),
     }

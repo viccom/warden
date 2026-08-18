@@ -87,6 +87,37 @@ async fn health_ok_without_auth() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
     assert!(body.contains("\"status\":\"ok\""));
+    assert!(
+        body.contains("\"title\":null"),
+        "未配置 title 应为 null:{body}"
+    );
+}
+
+/// 桌面版标题栏取 health 的 title(配置文件 [daemon] title 透出,唯一数据源)。
+#[tokio::test]
+async fn health_exposes_daemon_title() {
+    let mut cfg = Config {
+        services: vec![],
+        daemon: Default::default(),
+    };
+    cfg.daemon.title = Some("rs-iot 现场监护".into());
+    let state = build_state(cfg, None);
+    let app = build_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+    assert!(
+        body.contains("\"title\":\"rs-iot 现场监护\""),
+        "health 应透出 [daemon] title:{body}"
+    );
 }
 
 #[tokio::test]

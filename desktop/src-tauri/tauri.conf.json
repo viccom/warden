@@ -13,6 +13,7 @@
     "windows": [
       {
         "title": "warden 桌面版",
+        "decorations": false,
         "width": 960,
         "height": 860,
         "minWidth": 720,

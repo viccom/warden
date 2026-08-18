@@ -1,7 +1,7 @@
 // 全局响应式状态:节点注册(本地内嵌 + 远程)、聚合服务表、过滤与日志目标。
 import { reactive, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { clientFor } from './api';
+import { clientFor, showToast } from './api';
 
 export const store = reactive({
   ready: false,
@@ -63,6 +63,12 @@ export function tokenOf(url) {
   return store.nodes.find(n => n.url === url)?.token || '';
 }
 
+/// 节点是否在线(最近一次 2s 轮询成功)。首轮探测完成前(undefined)按离线处理。
+/// 离线节点上不可做任何任务操作(增删改/启停),只能删除节点本身或等它恢复。
+export function nodeOnline(url) {
+  return store.health[url]?.ok === true;
+}
+
 export async function refresh() {
   return refreshOnce();
 }
@@ -104,16 +110,18 @@ export async function initStore() {
   applyTheme(store.theme);
   store.local = await invoke('local_node_info');
   store.nodes = await invoke('nodes_list');
-  await refreshOnce();
-  // 偏好引用的节点/组可能已不存在(节点被删),失效则回退
+  // 先亮界面:节点探测不等(离线节点的连接超时曾把主页面阻塞数十秒)。
+  // 节点列表就绪即可渲染;探测结果异步到达,离线节点以「连接失败」呈现。
   if (store.nodeFilter !== 'ALL' && !allNodes().some(n => n.url === store.nodeFilter)) {
     store.nodeFilter = 'ALL';
   }
-  const valid = new Set(['ALL', 'UNGROUPED', ...groupsOfVisible().map(g => g.name)]);
-  if (!valid.has(store.group)) store.group = 'ALL';
   store.ready = true;
   watch(() => [store.nodeFilter, store.group, store.theme], savePrefs);
   setInterval(refreshOnce, 2000);
+  await refreshOnce();
+  // 组偏好回退依赖首轮服务数据(组名来自服务列表),须在刷新后校验
+  const valid = new Set(['ALL', 'UNGROUPED', ...groupsOfVisible().map(g => g.name)]);
+  if (!valid.has(store.group)) store.group = 'ALL';
 }
 
 export async function reloadNodes() {
@@ -147,13 +155,18 @@ export function groupsOfVisible() {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/// 组级(或全量)启停:作用于当前节点过滤范围内的全部节点。
+/// 组级(或全量)启停:只作用于当前节点过滤范围内的「在线」节点,
+/// 离线节点跳过并提示(否则 allSettled 静默吞掉失败,用户以为已执行)。
 export async function groupAction(group, act) {
   const nodes = allNodes().filter(n =>
     store.nodeFilter === 'ALL' ? true : n.url === store.nodeFilter
   );
+  const online = nodes.filter(n => nodeOnline(n.url));
+  const skipped = nodes.length - online.length;
+  if (skipped > 0) showToast(`已跳过离线节点 ${skipped} 个(不可操作)`);
+  if (!online.length) return;
   await Promise.allSettled(
-    nodes.map(n => {
+    online.map(n => {
       const c = clientFor(n);
       return group === '__all__'
         ? (act === 'start' ? c.startAll() : c.stopAll())

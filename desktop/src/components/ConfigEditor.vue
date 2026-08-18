@@ -1,7 +1,7 @@
 <script setup>
 // 配置文件编辑器:读/写节点侧 config-file API(toml/json 保存前校验,可格式化)。
 import { ref, computed, onMounted } from 'vue';
-import { store, tokenOf } from '../store';
+import { store, tokenOf, nodeOnline } from '../store';
 import { clientFor, showToast } from '../api';
 
 const form = store.configEditor; // {nodeUrl, name}
@@ -98,6 +98,7 @@ async function save(doFormat) {
   err.value = '';
   saving.value = true;
   try {
+    if (!nodeOnline(form.nodeUrl)) { err.value = '节点连接失败,无法保存(目标 warden 不在线)'; return; }
     await client.configFilePut(form.name, content.value, doFormat);
     dirty.value = false;
     exists.value = true;

@@ -10,6 +10,7 @@
 api_bind   = "127.0.0.1:8789"           # HTTP API 监听(本地)
 auth_token = "warden-secret-change-me"  # 留空 "" 则不鉴权
 data_dir   = "./data"                    # 日志/状态根目录
+# title = "rs-iot 现场监护"                    # 桌面版窗口/标题栏名称(可选,CLI 忽略;缺省 "warden 桌面版")
 log_dir    = "./logs"                    # warden 自身日志目录
 # alert_webhook = "http://127.0.0.1:9000/hook"  # 健康检查状态迁移告警(可选,POST JSON)
 # 全局环境变量:注入所有被监护进程(service 同名 key 覆盖全局)

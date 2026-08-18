@@ -18,5 +18,7 @@ pub async fn health(State(st): State<AppState>) -> impl IntoResponse {
         "services": total,
         "running": running,
         "failed": failed,
+        // 窗口/标题栏名称(桌面版标题栏取此值;CLI Web 不用)
+        "title": st.title,
     }))
 }

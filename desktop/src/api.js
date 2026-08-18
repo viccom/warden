@@ -1,5 +1,9 @@
 // 每节点 HTTP 客户端:统一覆盖本地内嵌节点与远程节点(CLI 版 warden API)。
 
+// 单请求超时:离线/不可达节点最多挂 4s 即按连接失败处理——
+// 无限期的 TCP 悬挂会拖住启动首屏与 2s 轮询(请求越积越多)。
+const REQ_TIMEOUT_MS = 4000;
+
 export function clientFor(node) {
   const base = String(node.url || '').replace(/\/+$/, '');
   const auth = node.token ? { Authorization: 'Bearer ' + node.token } : {};
@@ -11,6 +15,7 @@ export function clientFor(node) {
         ...(body ? { 'Content-Type': 'application/json' } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(REQ_TIMEOUT_MS),
     });
     if (!r.ok) {
       // 优先取响应体里的 message(如 toml 解析失败的详细位置),否则退回状态码

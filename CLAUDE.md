@@ -46,6 +46,9 @@ cd desktop && pnpm install
 pnpm tauri dev          # 开发模式(vite HMR + cargo 增量)
 pnpm tauri build --no-bundle   # 仅产出 target/release/warden-desktop.exe
 pnpm build              # 仅前端构建(vite)
+# ⚠️ 桌面版 release 必须走 `pnpm tauri build`:裸 `cargo build --release -p warden-desktop`
+#   不带 custom-protocol 特性 → exe 运行时加载 devUrl(开发服务器)而非内嵌前端 → 白屏。
+#   另:改前端后裸 cargo build 不会重新嵌入 dist(cargo 不追踪 dist 目录变化)。
 
 # HTTP API 默认 127.0.0.1:8789;auth_token 空(默认)则不鉴权
 curl http://127.0.0.1:8789/api/v1/health
