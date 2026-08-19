@@ -22,5 +22,8 @@ pnpm tauri build        # 生产构建(安装包)
 pnpm tauri build --no-bundle   # 仅产出 exe
 ```
 
-内嵌 daemon 的服务配置复用 CLI 版查找规则(`$WARDEN_CONFIG` → exe_dir → cwd → 平台位置);
-`data_dir`/`log_dir` 固定为桌面应用数据目录(与 CLI 版隔离,防止双 daemon 同写状态文件)。
+内嵌 daemon 的配置文件名独立(`services.desktop.toml`,与 CLI 的 `services.toml` 区分),查找链:
+`$WARDEN_CONFIG` → `<exe目录>/config/` → `<cwd>/warden/config/` → 应用数据目录;
+启动时把进程 cwd 锚定到配置基准目录,配置内相对路径(`../bin/xxx` 等)与启动方式解耦。
+`data_dir`/`log_dir` 固定为桌面应用数据目录(与 CLI 版隔离,防止双 daemon 同写状态文件);
+窗口/标题栏名称可经 `[daemon] title` 配置(health 接口透出)。
