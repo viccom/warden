@@ -11,6 +11,9 @@ const services = computed(() => visibleServices());
 const filterOffline = computed(() =>
   store.nodeFilter !== 'ALL' && !nodeOnline(store.nodeFilter)
 );
+// 「全部节点」视图:只允许观察/过滤与单服务操作——新增服务的目标节点不明确、
+// 全部启停与组级启停是跨节点批量动作,均禁止(须先选中具体节点)
+const allNodes = computed(() => store.nodeFilter === 'ALL');
 
 const stateName = s => s?.state?.state || 'unknown';
 const isRun = s => stateName(s) === 'running';
@@ -69,7 +72,7 @@ function createTarget() {
 
 async function createService() {
   const target = createTarget();
-  if (!target || !nodeOnline(target)) return;
+  if (store.nodeFilter === 'ALL' || !target || !nodeOnline(target)) return;
   store.serviceForm = { mode: 'create', nodeUrl: target };
 }
 </script>
@@ -96,26 +99,26 @@ async function createService() {
         >
           <span class="gname" @click="store.group = g.name">{{ g.name }} <i>{{ g.count }}</i></span>
           <span class="gops">
-            <button class="mini" title="组内全部启动(按优先级)" @click="groupAction(g.name, 'start')">▶</button>
-            <button class="mini" title="组内全部停止(逆序)" @click="groupAction(g.name, 'stop')">■</button>
+            <button class="mini" :disabled="allNodes" :title="allNodes ? '全部节点视图不允许跨节点批量操作' : '组内全部启动(按优先级)'" @click="groupAction(g.name, 'start')">▶</button>
+            <button class="mini" :disabled="allNodes" :title="allNodes ? '全部节点视图不允许跨节点批量操作' : '组内全部停止(逆序)'" @click="groupAction(g.name, 'stop')">■</button>
           </span>
         </div>
       </div>
       <div class="ops">
         <input v-model="store.keyword" placeholder="搜索服务名…" class="search" />
         <button
-          :disabled="!nodeOnline(createTarget())"
-          :title="nodeOnline(createTarget()) ? '' : '目标节点连接失败,不可新增服务'"
+          :disabled="allNodes || !nodeOnline(createTarget())"
+          :title="allNodes ? '请先在左侧选择具体节点(新增服务需明确目标)' : (nodeOnline(createTarget()) ? '' : '目标节点连接失败,不可新增服务')"
           @click="createService"
         >＋ 新增服务</button>
         <button
-          :disabled="filterOffline"
-          :title="filterOffline ? '节点连接失败,不可操作' : ''"
+          :disabled="allNodes || filterOffline"
+          :title="allNodes ? '全部节点视图不允许批量操作,请先选择具体节点' : (filterOffline ? '节点连接失败,不可操作' : '')"
           @click="groupAction('__all__', 'start')"
         >全部启动</button>
         <button
-          :disabled="filterOffline"
-          :title="filterOffline ? '节点连接失败,不可操作' : ''"
+          :disabled="allNodes || filterOffline"
+          :title="allNodes ? '全部节点视图不允许批量操作,请先选择具体节点' : (filterOffline ? '节点连接失败,不可操作' : '')"
           @click="groupAction('__all__', 'stop')"
         >全部停止</button>
       </div>
@@ -125,7 +128,9 @@ async function createService() {
       <div v-if="!services.length" class="empty">
         {{ filterOffline
           ? '节点连接失败,无法读取服务列表(可删除该节点或稍后重试)'
-          : '无匹配服务 —— 可在左侧添加节点,或点「＋ 新增服务」' }}
+          : allNodes
+            ? '无匹配服务 —— 可在左侧添加/选择节点,或调整过滤'
+            : '无匹配服务 —— 可点「＋ 新增服务」' }}
       </div>
       <div
         v-for="s in services"
