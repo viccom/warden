@@ -1,64 +1,68 @@
 # warden 服务配置示例 —— rs-iot 现场三件套
 #
-# 用法:
+# 用法(在部署根目录):
 #   warden run --config config/services.example.toml
 #
-# 路径以现场部署根 E:\rsiot-field 为例,按你的实际环境调整。
-# [daemon] 控制监护器自身;每个 [[service]] 是一个被监护进程。
+# 路径为相对 warden 进程 cwd 的示例(生产部署常见布局:bin/ rs-iot/ work/ 与
+# warden 同级);按实际环境调整。[daemon] 控制监护器自身;每个 [[service]]
+# 是一个被监护进程。服务 1 演示全部字段,服务 2/3 为最小配置对照。
 
 [daemon]
-api_bind   = "127.0.0.1:8789"           # HTTP API 监听(本地)
-auth_token = "warden-secret-change-me"  # 留空 "" 则不鉴权
-data_dir   = "./data"                    # 日志/状态根目录
-# title = "rs-iot 现场监护"                    # 桌面版窗口/标题栏名称(可选,CLI 忽略;缺省 "warden 桌面版")
-log_dir    = "./logs"                    # warden 自身日志目录
-# alert_webhook = "http://127.0.0.1:9000/hook"  # 健康检查状态迁移告警(可选,POST JSON)
+api_bind      = "127.0.0.1:8789"          # HTTP API 监听地址
+auth_token    = "warden-secret-change-me" # Bearer 鉴权 token;留空 "" 则不鉴权
+data_dir      = "./data"                  # 运行数据根目录(LogHub 落盘等)
+log_dir       = "./logs"                  # warden 自身日志目录(按日滚动)
+# title        = "rs-iot 现场监护"        # 桌面版窗口/标题栏名称(可选;CLI 忽略)
+# alert_webhook = "http://127.0.0.1:9000/hook"  # 健康状态迁移告警(可选,POST JSON)
 # 全局环境变量:注入所有被监护进程(service 同名 key 覆盖全局)
 # env = { RUST_LOG = "info", TZ = "Asia/Shanghai" }
 
-# ── 1. rs-iot 主程序 ──────────────────────────────────────────
+# ── 1. rs-iot 主程序(全字段演示)──────────────────────────────
 # REST :8790 / lux :6390,工业 IoT 边缘网关核心。
-# 必须从部署根启动(scripts/data/logs 为 cwd 相对路径)。
 # priority:小者先启动、越后停止 → rs-iot(0)先于 reasonix(5)先于 gateway(10)。
 [[service]]
-name         = "rs-iot"
-display_name = "rs-iot 主程序"
-description  = "REST :8790 / lux :6390"
-command      = "E:/rsiot-field/bin/rs-iot.exe"
-args         = ["--config", "config.toml"]
-working_dir  = "E:/rsiot-field"
-group        = "rs-iot-suite"
-priority     = 0
-auto_start   = true
-auto_restart = false
-# output_encoding = "gbk"   # 中文 Windows 控制台程序若中文日志丢失/乱码,设此项
+name         = "rs-iot"                   # 唯一标识(禁 / \ : * ? " < > |,不可重复)
+display_name = "rs-iot 主程序"             # 展示名(可选,TUI/Web/桌面卡片标题)
+description  = "REST :8790 / lux :6390"   # 一句话描述(可选)
+command      = "bin/rs-iot.exe"           # 可执行文件(相对 warden 进程 cwd)
+args         = ["--config", "config.toml"] # 命令行参数数组
+working_dir  = "."                        # 子进程工作目录(缺省继承 warden cwd)
+group        = "rs-iot-suite"             # 分组标签(纯展示 + 组级启停;不可含 /)
+priority     = 0                          # 启动优先级:小者先启动、越后停止;缺省 0
+auto_start   = true                       # daemon 启动时自动拉起(唯一的重启恢复源)
+auto_restart = false                      # 崩溃后自动重启(需配合 restart 策略)
+# 崩溃重启策略(退避重试;窗口内超 max_retries 熔断进 Failed)——缺省值如下:
+# restart = { max_retries = 3, backoff_initial_ms = 1000, backoff_max_ms = 60000, backoff_factor = 2.0, restart_window_secs = 60 }
+# TCP 健康检查(unhealthy 迁移写日志 + 可选 webhook;缺省 timeout 2000ms/间隔 5s):
+health = { type = "tcp", host = "127.0.0.1", port = 8790, timeout_ms = 2000, interval_secs = 5 }
+graceful_timeout_secs = 10                # 优雅停止:发信号后等待秒数,超时强杀进程树;缺省 10
+ui_url       = "http://127.0.0.1:8790"   # 管理入口(可选;点亮 UI「打开」按钮)
+config_file  = "rs-iot/config/config.toml" # 子进程配置文件(可选;点亮 UI「编辑」按钮)
+# output_encoding = "gbk"   # 子进程输出编码(gbk/cp936/utf-8;缺省 UTF-8,中文乱码时设 gbk)
 # environment = { RUST_LOG = "debug" }  # 本服务专属环境变量(覆盖 daemon env 同名项)
 
-# ── 2. Reasonix AI Agent ─────────────────────────────────────
-# 官方 Go 单二进制(直接调用,不走 cmd /c + node,stop 时 warden 直接 kill 无孤儿)。
-# work/ 为工作目录(单会话)。reasonix 自身配置在 %APPDATA%\reasonix\config.toml。
+# ── 2. Reasonix AI Agent(最小配置对照)───────────────────────
+# AI Agent 后端 :8787。work/ 为工作目录(单会话)。
 [[service]]
 name         = "reasonix"
 display_name = "Reasonix AI Agent"
-description  = "AI Agent 后端 :8787,单会话(Go 官方单二进制)"
-command      = "E:/rsiot-field/bin/reasonix.exe"
-args         = ["serve", "-addr", "127.0.0.1:8787", "-auth", "token", "-token", "test-serve-token-123"]
-working_dir  = "E:/rsiot-field/work"
+description  = "AI Agent 后端 :8787,单会话"
+command      = "bin/reasonix.exe"
+args         = ["serve", "-addr", "127.0.0.1:8787", "--no-open"]
+working_dir  = "work"
 group        = "rs-iot-suite"
 priority     = 5
 auto_start   = true
-auto_restart = false
 
-# ── 3. rsiot-gateway 前端网关 ────────────────────────────────
+# ── 3. rsiot-gateway 前端网关(最小配置对照)──────────────────
 # 嵌入前端 + 反代到 rs-iot :8790 / reasonix :8787。
 [[service]]
 name         = "rsiot-gateway"
 display_name = "前端 + 反代网关"
 description  = ":8080,嵌入前端 + 反代"
-command      = "E:/rsiot-field/bin/rsiot-gateway.exe"
-args         = ["gateway.toml"]
-working_dir  = "E:/rsiot-field"
+command      = "bin/rsiot-gateway.exe"
+args         = ["rs-iot/config/gateway.toml"]
+working_dir  = "."
 group        = "rs-iot-suite"
 priority     = 10
 auto_start   = true
-auto_restart = false

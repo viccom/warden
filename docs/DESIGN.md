@@ -120,7 +120,10 @@ pub struct ServiceConfig {
     #[serde(default)] pub auto_restart: bool,    // 崩溃自动重启,默认 false
     #[serde(default)] pub restart: RestartPolicy,
     #[serde(default)] pub health: Option<HealthCheck>,
-    #[serde(default)] pub ui_url: Option<String>,
+    #[serde(default)] pub ui_url: Option<String>,        // 管理入口,UI「打开」按钮
+    #[serde(default)] pub config_file: Option<String>,   // 子进程配置文件,UI「编辑」入口
+    #[serde(default = "default_graceful_timeout_secs")] pub graceful_timeout_secs: u64, // 默认 10
+    #[serde(default)] pub output_encoding: Option<String>, // "gbk"/"cp936"/"utf-8";None=UTF-8
     #[serde(default)] pub group: Option<String>,   // 分组标签(纯展示,不参与排序)
     #[serde(default)] pub priority: u32,           // 启动优先级:小者先启动、越后停止;同值按 name 字典序
 }
@@ -139,8 +142,8 @@ pub struct RestartPolicy {
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum HealthCheck {
     Tcp { host: String, port: u16, timeout_ms: u64, interval_secs: u64 },
+    // timeout_ms 默认 2000,interval_secs 默认 5
 }
-// Phase 1 框架性定义;完整探测与告警在 Phase 4
 ```
 
 ### 5.2 运行态(内存,不持久化)
@@ -239,18 +242,26 @@ pub struct LogHub {
 
 | Method | Path | 说明 |
 |---|---|---|
+| GET | `/` | 内置 Web UI 单页(状态/日志/CRUD/配置编辑) |
+| GET | `/api/v1/health` | daemon 健康(版本、服务数、running/failed 计数、`[daemon] title`) |
 | GET | `/api/v1/services` | 列出全部(配置 + 状态 + metrics 摘要) |
-| GET | `/api/v1/services/:name` | 单服务详情 |
-| POST | `/api/v1/services/:name/start` | 启动 |
-| POST | `/api/v1/services/:name/stop` | 停止(强制 kill) |
-| POST | `/api/v1/services/:name/restart` | 重启(stop → start) |
-| GET | `/api/v1/services/:name/logs?tail=500` | 日志快照 |
-| GET | `/api/v1/services/:name/logs/stream` | SSE 实时流 |
-| GET | `/api/v1/services/:name/metrics` | CPU/内存/PID/uptime |
-| POST | `/api/v1/services/start-all` | 启动所有 auto_start |
-| POST | `/api/v1/services/stop-all` | 停止所有运行中 |
-| POST | `/api/v1/config/reload` | 重新加载配置文件 |
-| GET | `/api/v1/health` | daemon 健康(版本、服务数、running/failed 计数) |
+| POST | `/api/v1/services` | 新增服务(校验后写回配置文件,重名/运行中 409) |
+| GET | `/api/v1/services/{name}` | 单服务详情 |
+| PUT | `/api/v1/services/{name}` | 修改服务(写回配置文件;运行中保存下次启动生效) |
+| DELETE | `/api/v1/services/{name}` | 删除服务(运行中 409) |
+| POST | `/api/v1/services/{name}/start` | 启动 |
+| POST | `/api/v1/services/{name}/stop` | 停止(优雅:信号 → graceful_timeout → 强杀进程树) |
+| POST | `/api/v1/services/{name}/restart` | 重启(stop → start) |
+| GET | `/api/v1/services/{name}/logs?tail=500` | 日志快照 |
+| GET | `/api/v1/services/{name}/logs/stream` | SSE 实时流 |
+| GET | `/api/v1/services/{name}/metrics` | CPU/内存/PID/uptime/监听端口 |
+| GET | `/api/v1/services/{name}/config` | 服务配置(编辑表单预填用) |
+| GET/PUT | `/api/v1/services/{name}/config-file` | 子进程配置文件读写(toml/json 校验+格式化) |
+| POST | `/api/v1/services/start-all` | 启动全部(按 priority 有序) |
+| POST | `/api/v1/services/stop-all` | 停止全部(逆序优雅) |
+| POST | `/api/v1/groups/{group}/start` | 组内全部启动(按 priority) |
+| POST | `/api/v1/groups/{group}/stop` | 组内全部停止(逆序) |
+| POST | `/api/v1/config/reload` | 重新加载配置文件(diff 应用,消失的服务优雅移除) |
 
 - **鉴权(Phase 1)**:静态 token。`config.daemon.auth_token` 非空时校验 `Authorization: Bearer <token>`;`/api/v1/health` 放白名单(便于探活)。监听 `127.0.0.1`。Phase 4 加 Web 时再升级为 JWT + login。
 - **graceful shutdown**:`tokio_util::sync::CancellationToken` 监听 ctrl_c → `cancel()` → 停所有子进程 + 关 API(对齐 rs-iot `lib.rs` 模式)。
@@ -260,10 +271,13 @@ pub struct LogHub {
 
 ```toml
 [daemon]
-api_bind   = "127.0.0.1:8789"
-auth_token = "warden-secret-change-me"   # 留空 "" 则不鉴权
-data_dir   = "./data"
-log_dir    = "./logs"
+api_bind      = "127.0.0.1:8789"
+auth_token    = "warden-secret-change-me"   # 留空 "" 则不鉴权
+data_dir      = "./data"
+log_dir       = "./logs"
+# alert_webhook = "http://127.0.0.1:9000/hook"   # 健康检查状态迁移告警(POST JSON)
+# env = { RUST_LOG = "info" }                     # 全局环境变量(service 同名覆盖)
+# title = "my-warden"                             # 桌面版窗口/标题栏名称(CLI 忽略)
 
 [[service]]
 name         = "..."
@@ -276,12 +290,12 @@ auto_restart = false
 # restart = { max_retries = 3, backoff_initial_ms = 1000, backoff_max_ms = 60000, backoff_factor = 2.0, restart_window_secs = 60 }
 ```
 
-- **路径查找优先级**(对齐 serviceMgr-tui):
+- **路径查找优先级**(CLI;桌面版另有独立链,见 `desktop/src-tauri/src/daemon.rs`):
   1. `$WARDEN_CONFIG` 环境变量
   2. `<exe_dir>/config/services.toml`
   3. `./config/services.toml`
-  4. 平台标准位置(`%ProgramData%\warden\services.toml` / `/etc/warden/services.toml`,经 `directories` crate)
-- **校验**:name 非空且唯一、command 路径存在、args 是数组、name 字符白名单(禁 `/\:*?"<>|`)。坏项**跳过并 warn**(对齐 serviceMgr-tui parser 容错,不因一个坏服务拖垮整体加载)。
+  4. 平台标准位置(用户级,`directories` ProjectDirs;Windows `%APPDATA%\warden\config\services.toml`,Linux `~/.config/warden/services.toml`)
+- **校验**:name 非空、唯一、字符白名单(禁 `/\:*?"<>|`);command 非空(不预检路径——spawn 失败零重试进 Failed,见 §6);group 不含 `/`(组级 API 路由参数)。坏项**跳过并 warn**(对齐 serviceMgr-tui parser 容错,不因一个坏服务拖垮整体加载)。
 - **Default**:`#[serde(default)]` + 手写 `impl Default`,partial 配置安全(对齐 rs-iot `config.rs`)。
 
 ## 10. 错误处理(对齐 rs-iot,分层)
