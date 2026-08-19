@@ -55,7 +55,9 @@ args         = ["--config", "config/app.toml"]
 working_dir  = "."
 auto_start   = false
 auto_restart = true
-restart      = { max_retries = 3, backoff_initial_ms = 1000, backoff_max_ms = 60000, backoff_factor = 2.0, restart_window_secs = 60 }
+restart      = { mode = "always", max_retries = 3, backoff_initial_ms = 1000, backoff_max_ms = 60000, backoff_factor = 2.0, restart_window_secs = 60 }
+# mode:"always"(默认)|"unexpected"(退出码在 expected_exit_codes 内视作预期退出,不重启——子进程自升级场景)|"never"
+# unexpected 模式示例:restart.mode = "unexpected" / restart.expected_exit_codes = [0](默认 [0])
 health       = { type = "tcp", host = "127.0.0.1", port = 8080, timeout_ms = 2000, interval_secs = 5 }
 graceful_timeout_secs = 10
 group        = "core"

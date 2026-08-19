@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::Config;
 use crate::error::{WResult, WardenError};
 use crate::logs::{LogHub, RollingFile};
-use crate::model::{HealthStatus, LastExit, ProcMetrics, ProcState, ServiceConfig};
+use crate::model::{HealthStatus, LastExit, ProcMetrics, ProcState, RestartMode, ServiceConfig};
 
 pub use ports::ListeningSocket;
 
@@ -423,6 +423,8 @@ impl ProcHandle {
             listening_ports: g.ports.clone(),
             auto_start: g.config.auto_start,
             auto_restart: g.config.auto_restart,
+            restart_mode: g.config.restart.mode.clone(),
+            expected_exit_codes: g.config.restart.expected_exit_codes.clone(),
             group: g.config.group.clone(),
             priority: g.config.priority,
             ui_url: g.config.ui_url.clone(),
@@ -469,6 +471,13 @@ pub struct ServiceStatus {
     pub listening_ports: Vec<ListeningSocket>,
     pub auto_start: bool,
     pub auto_restart: bool,
+    /// 退出行为模式(默认 Always;supervisord `autorestart` 语义对齐)。
+    /// 当 `auto_restart=false` 时,实际行为退化为 Never(代码层面强制),
+    /// 字段本身保留配置原值供 UI 展示。
+    pub restart_mode: RestartMode,
+    /// `restart_mode = Unexpected` 时的预期退出码白名单。
+    /// 关注:仅展示用,真实决策在 `supervisor::proc::supervise` 内。
+    pub expected_exit_codes: Vec<i32>,
     /// 分组标签(纯展示)。
     pub group: Option<String>,
     /// 启动优先级(小者先启动、后停止)。

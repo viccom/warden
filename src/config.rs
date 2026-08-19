@@ -306,6 +306,29 @@ restart = { max_retries = 5, backoff_initial_ms = 500, backoff_max_ms = 30000, b
         assert_eq!(r.backoff_max_ms, 30000);
     }
 
+    /// 意图:RestartPolicy 全字段解析(mode / expected_exit_codes /
+    /// max_retries / 退避参数)直读正确,配套子进程自升级场景。
+    /// 缺这些字段的旧配置 → 走 Default 兜底,单测已由 `restart_policy_override`
+    /// 默认值侧覆盖(mode 缺省 Always / expected_exit_codes 缺省 vec![0])。
+    #[test]
+    fn restart_policy_with_unexpected_mode_parses() {
+        // 多行 inline table 见 SERVICESAMPLE 转储(existing 风格)。toml 0.8
+        // 不支持 inline table 跨行——必须单行。
+        let toml = r#"
+[[service]]
+name = "a"
+command = "/bin/true"
+auto_restart = true
+restart = { mode = "unexpected", expected_exit_codes = [0, 130], max_retries = 5, backoff_initial_ms = 500, backoff_max_ms = 30000, backoff_factor = 3.0, restart_window_secs = 120 }
+"#;
+        let cfg = Config::parse(toml).unwrap();
+        let r = &cfg.services[0].restart;
+        assert_eq!(r.mode, crate::model::RestartMode::Unexpected);
+        assert_eq!(r.expected_exit_codes, vec![0, 130]);
+        assert_eq!(r.max_retries, 5);
+        assert_eq!(r.backoff_factor, 3.0);
+    }
+
     #[test]
     fn daemon_section_defaults_when_absent() {
         let toml = "[[service]]\nname=\"a\"\ncommand=\"/bin/true\"\n";

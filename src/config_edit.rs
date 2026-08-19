@@ -175,6 +175,22 @@ fn svc_to_table(svc: &ServiceConfig) -> Table {
         "restart_window_secs",
         Value::from(svc.restart.restart_window_secs as i64),
     );
+    // RestartMode 序列化为 lowercase 字符串(serde::Serialize 派生处理)。
+    // mode 字段须显式写出,否则回读为默认值 Always(见 restart_policy_*
+    // 测试注释 / plan 一致性:Profile round-trip 完整保字段)。
+    let mode_str = serde_json::to_value(&svc.restart.mode)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "always".into());
+    r.insert("mode", Value::from(mode_str));
+    // toml_edit::Value 不直接 From<Vec<i64>>,需要先构造 Array 再 Value::Array。
+    let codes = toml_edit::Array::from_iter(
+        svc.restart
+            .expected_exit_codes
+            .iter()
+            .map(|n| Value::from(i64::from(*n))),
+    );
+    r.insert("expected_exit_codes", Value::Array(codes));
     t["restart"] = value(r);
     if let Some(crate::model::HealthCheck::Tcp {
         host,

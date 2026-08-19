@@ -81,6 +81,47 @@ pub struct RestartPolicy {
     pub backoff_factor: f64,
     /// 重试计数重置窗口秒;距上次启动超过该值则重置计数。
     pub restart_window_secs: u64,
+    /// 退出行为模式(默认 Always 完全向后兼容)。
+    ///
+    /// - `always`(默认):任意退出 → 按退避策略尝试重启,超 max_retries 熔断;
+    /// - `unexpected`:退出码在 `expected_exit_codes` 内 → 视作预期退出(`Stopped`),
+    ///   不重启;否则按退避策略重启。**适用于子进程自升级**(旧进程在 fork 后
+    ///   主动 exit 0 表示"我已交班",不该当作崩溃);
+    /// - `never`:任意退出 → 不重启(等价于 `auto_restart = false`)。
+    ///
+    /// 实际生效模式 = `auto_restart=false` → 强制 `Never`(避免双重表达);否则
+    /// 沿用 `mode` 字段。
+    #[serde(default)]
+    pub mode: RestartMode,
+    /// `mode = Unexpected` 时的预期退出码白名单。
+    /// 进程以这些码退出 → 视作预期退出,状态进 `Stopped`,`last_exit` 记录,
+    /// `restart_count` 不递增(自然衰减由 `restart_window_secs` 决定)。
+    /// 默认 `vec![0]` —— 约定俗成的"正常退出"码。
+    /// 留空 `vec![]` 等价于"任何退出码都不命中白名单"→ 退化为 backoff 路径,
+    /// 配置层面无意义,文档已说明不建议留空。
+    #[serde(default = "default_expected_exit_codes")]
+    pub expected_exit_codes: Vec<i32>,
+}
+
+fn default_expected_exit_codes() -> Vec<i32> {
+    vec![0]
+}
+
+/// 退出行为模式(对齐 supervisord `autorestart=unexpected` 语义)。
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RestartMode {
+    /// 任意退出 → 按退避策略重启(默认;warden 现状行为)。
+    #[default]
+    Always,
+    /// 退出码在 `expected_exit_codes` 内 → 视作预期退出,不重启;
+    /// 退出码不在白名单 → 走退避路径(与 `Always` 行为一致)。
+    /// **典型用途**:子进程自升级时旧进程主动 exit,warden 不应累加 restart_count。
+    Unexpected,
+    /// 任意退出 → 不重启(状态 `Stopped`,不再启动)。
+    /// 配置层面等价 `auto_restart = false`,但保留 `auto_restart` 字段
+    /// 表达"是否启用任何形式的自动响应"的总开关语义。
+    Never,
 }
 
 impl Default for RestartPolicy {
@@ -91,6 +132,8 @@ impl Default for RestartPolicy {
             backoff_max_ms: 60_000,
             backoff_factor: 2.0,
             restart_window_secs: 60,
+            mode: RestartMode::Always,
+            expected_exit_codes: vec![0],
         }
     }
 }
@@ -239,5 +282,38 @@ mod tests {
         };
         assert!(running.is_running());
         assert_eq!(running.name(), "running");
+    }
+
+    /// 意图:RestartMode 的 serde 标签必须为 lowercase(便于 toml 中
+    /// `mode = "unexpected"` 直读);默认值 Always 反映"零迁移"。
+    /// 完整字段 round-trip 由 `config::tests::restart_policy_with_unexpected_mode_parses`
+    /// 覆盖(Config 路径,inline table 跨行 + 自动处理)。
+    #[test]
+    fn restart_mode_serde_and_default() {
+        assert_eq!(RestartMode::default(), RestartMode::Always);
+        // 序列化:RestartMode 表达进 RestartPolicy inline table
+        let pol = RestartPolicy {
+            mode: RestartMode::Unexpected,
+            ..RestartPolicy::default()
+        };
+        let s = toml::to_string(&pol).unwrap();
+        assert!(s.contains("mode = \"unexpected\""), "实际:{s}");
+        // 三种枚举值的 lowercase 标签
+        let cases = [
+            (RestartMode::Always, "\"always\""),
+            (RestartMode::Unexpected, "\"unexpected\""),
+            (RestartMode::Never, "\"never\""),
+        ];
+        for (m, want) in cases {
+            let p = RestartPolicy {
+                mode: m.clone(),
+                ..RestartPolicy::default()
+            };
+            let s = toml::to_string(&p).unwrap();
+            assert!(
+                s.contains(&format!("mode = {want}")),
+                "变体 {m:?} 序列化期望 {want},实际:{s}"
+            );
+        }
     }
 }

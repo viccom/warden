@@ -131,7 +131,21 @@ async fn crud_writes_to_config_file_and_survives_restart() {
     assert_ne!(r.status(), 200, "body.name 与路径不一致应拒绝");
 
     // update:一致 → 200,文件已替换
-    let up = serde_json::json!({ "name": "runtime-svc", "command": "updated-cmd", "args": [] });
+    let up = serde_json::json!({
+        "name": "runtime-svc",
+        "command": "updated-cmd",
+        "args": [],
+        "auto_restart": true,
+        "restart": {
+            "mode": "unexpected",
+            "expected_exit_codes": [0, 130],
+            "max_retries": 5,
+            "backoff_initial_ms": 500,
+            "backoff_max_ms": 30000,
+            "backoff_factor": 3.0,
+            "restart_window_secs": 120,
+        },
+    });
     let r = hit(&state, "PUT", "/api/v1/services/runtime-svc", Some(up)).await;
     assert_eq!(r.status(), 200);
     assert!(
@@ -140,6 +154,20 @@ async fn crud_writes_to_config_file_and_survives_restart() {
             .contains("updated-cmd"),
         "update 应写回文件"
     );
+
+    // update:restart_policy 新字段(mode / expected_exit_codes 等)round-trip
+    // 落盘 + 反序列化无损 —— 钓 PUT 写盘吞字段的回归。
+    let cfg = read_cfg(&cfg_path);
+    let svc = cfg
+        .services
+        .iter()
+        .find(|s| s.name == "runtime-svc")
+        .unwrap();
+    use warden::model::RestartMode;
+    assert_eq!(svc.restart.mode, RestartMode::Unexpected);
+    assert_eq!(svc.restart.expected_exit_codes, vec![0, 130]);
+    assert_eq!(svc.restart.max_retries, 5);
+    assert_eq!(svc.restart.backoff_factor, 3.0);
 
     // delete:200,文件条目移除(真删,重启不复活)
     let r = hit(&state, "DELETE", "/api/v1/services/runtime-svc", None).await;

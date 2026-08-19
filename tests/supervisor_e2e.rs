@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use warden::config::Config;
-use warden::model::{RestartPolicy, ServiceConfig};
+use warden::model::{RestartMode, RestartPolicy, ServiceConfig};
 use warden::supervisor::Supervisor;
 use warden::WardenError;
 
@@ -35,6 +35,8 @@ fn make_config(
             backoff_max_ms: 500,
             backoff_factor: 2.0,
             restart_window_secs: 3600,
+            mode: RestartMode::Always,
+            expected_exit_codes: vec![0],
         },
         health: None,
         ui_url: None,
@@ -235,4 +237,83 @@ async fn apply_config_updates_existing_service_config() {
     let st = sv.status("keep").unwrap();
     assert_eq!(st.priority, 9, "reload 应替换同名服务配置");
     assert_eq!(st.state.name(), "stopped");
+}
+
+/// 意图:restart_mode = unexpected + 退出码在白名单内 → 视作预期退出,
+/// 状态 Stopped,不重启,restart_count = 0,last_exit 记录。
+/// 典型场景:子进程自升级 fork-exec 后旧进程主动 exit 0。
+#[tokio::test]
+async fn unexpected_mode_with_expected_exit_does_not_restart() {
+    let (cmd, args) = common::exit_with(0);
+    let mut svc = make_config("selfup", &cmd, args, true, 3);
+    svc.restart.mode = RestartMode::Unexpected;
+    svc.restart.expected_exit_codes = vec![0];
+    let sv = supervisor_with(svc);
+
+    sv.start("selfup").await.unwrap();
+    wait_for_state(&sv, "selfup", "stopped", Duration::from_secs(5)).await;
+
+    let st = sv.status("selfup").unwrap();
+    assert_eq!(st.state.name(), "stopped", "预期退出应进 Stopped");
+    assert_eq!(st.restart_count, 0, "白名单命中不应累加 restart_count");
+    let last = st.last_exit.as_ref().expect("last_exit 应记录");
+    assert_eq!(last.exit_code, Some(0), "last_exit 应记录白名单退出码");
+    // 验证 ServiceStatus 透出字段(供 UI/排障)
+    assert_eq!(st.restart_mode, RestartMode::Unexpected);
+    assert_eq!(st.expected_exit_codes, vec![0]);
+}
+
+/// 意图:restart_mode = unexpected + 退出码不在白名单 → 走 backoff 路径,
+/// 与 Always 行为一致(熔断进 Failed)。
+#[tokio::test]
+async fn unexpected_mode_with_unexpected_exit_restarts() {
+    let (cmd, args) = common::exit_with(1);
+    let mut svc = make_config("unx", &cmd, args, true, 2);
+    svc.restart.mode = RestartMode::Unexpected;
+    svc.restart.expected_exit_codes = vec![0]; // 1 不在白名单
+    let sv = supervisor_with(svc);
+
+    sv.start("unx").await.unwrap();
+    wait_for_state(&sv, "unx", "failed", Duration::from_secs(5)).await;
+
+    let st = sv.status("unx").unwrap();
+    assert_eq!(
+        st.state.name(),
+        "failed",
+        "白名单外退出码应走 backoff 并熔断"
+    );
+    assert_eq!(st.restart_count, 2, "max_retries=2 应重试 2 次后熔断");
+}
+
+/// 意图:restart_mode 缺省为 Always,完全等价既有行为(向后兼容钉死)。
+#[tokio::test]
+async fn always_mode_default_unchanged() {
+    let (cmd, args) = common::quick_fail();
+    let sv = supervisor_with(make_config("def", &cmd, args, true, 2));
+
+    sv.start("def").await.unwrap();
+    wait_for_state(&sv, "def", "failed", Duration::from_secs(5)).await;
+
+    let st = sv.status("def").unwrap();
+    assert_eq!(st.state.name(), "failed");
+    assert_eq!(st.restart_mode, RestartMode::Always, "缺省应为 Always");
+    assert_eq!(st.restart_count, 2, "Always 模式:max_retries=2 熔断");
+}
+
+/// 意图:restart_mode = Never 即便 auto_restart=true 也退化为
+/// auto_restart=false 路径(状态 Failed,restart_count=0)——避免双重表达,
+/// 旧字段仍作"总开关"的语义保持。
+#[tokio::test]
+async fn never_mode_equivalent_to_auto_restart_false() {
+    let (cmd, args) = common::quick_fail();
+    let mut svc = make_config("never", &cmd, args, true, 3);
+    svc.restart.mode = RestartMode::Never;
+    let sv = supervisor_with(svc);
+
+    sv.start("never").await.unwrap();
+    wait_for_state(&sv, "never", "failed", Duration::from_secs(5)).await;
+
+    let st = sv.status("never").unwrap();
+    assert_eq!(st.state.name(), "failed");
+    assert_eq!(st.restart_count, 0, "Never 模式不应累加 restart_count");
 }

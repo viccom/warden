@@ -25,3 +25,23 @@ pub fn quick_fail() -> (String, Vec<String>) {
         ("false".into(), vec![])
     }
 }
+
+/// 立即以指定退出码退出,用于测试退出码白名单(Unexpected 模式)。
+///
+/// 跨平台实现:
+/// - Windows:`cmd /c exit <code>` —— cmd 自身退出码 = `<code>`
+/// - Unix:`sh -c 'exit <code>'` —— sh 在 POSIX 一定可得,退出码可靠
+///
+/// 选用 `sh -c `<不是 `sh -c 'exit <code>;'` `<避免注入风险)
+/// 且参数化形式比拼接 shell 命令更干净。
+#[allow(dead_code)] // 跨测试共享 helper,部分 target 不使用
+pub fn exit_with(code: i32) -> (String, Vec<String>) {
+    if cfg!(windows) {
+        (
+            "cmd".into(),
+            vec!["/c".into(), "exit".into(), code.to_string()],
+        )
+    } else {
+        ("sh".into(), vec!["-c".into(), format!("exit {code}")])
+    }
+}

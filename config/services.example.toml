@@ -36,6 +36,11 @@ auto_start   = true                       # daemon 启动时自动拉起(唯一�
 auto_restart = false                      # 崩溃后自动重启(需配合 restart 策略)
 # 崩溃重启策略(退避重试;窗口内超 max_retries 熔断进 Failed)——缺省值如下:
 # restart = { max_retries = 3, backoff_initial_ms = 1000, backoff_max_ms = 60000, backoff_factor = 2.0, restart_window_secs = 60 }
+# 自升级场景(子进程 fork 后旧进程主动 exit 0,不该当作崩溃重启)——
+# 用 dotted-key 多行写法(TOML 的 inline table 不允许跨行):
+# restart.mode = "unexpected"             # 退出码在 expected_exit_codes 内 → 视作预期退出(Stopped,不重启)
+# restart.expected_exit_codes = [0]       # 默认 [0];被信号杀死记 -1 哨兵,需覆盖信号场景配 -1
+# mode 有:"always"(默认,任意退出都重启)|"unexpected"|"never"(任意退出不重启,等价 auto_restart = false)
 # TCP 健康检查(unhealthy 迁移写日志 + 可选 webhook;缺省 timeout 2000ms/间隔 5s):
 health = { type = "tcp", host = "127.0.0.1", port = 8790, timeout_ms = 2000, interval_secs = 5 }
 graceful_timeout_secs = 10                # 优雅停止:发信号后等待秒数,超时强杀进程树;缺省 10

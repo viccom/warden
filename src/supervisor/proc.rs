@@ -11,7 +11,7 @@ use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
 use crate::logs::{LogHub, LogStream};
-use crate::model::ProcState;
+use crate::model::{ProcState, RestartMode};
 
 use super::ProcHandle;
 
@@ -165,8 +165,16 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
             });
         }
 
-        // 未启用自动重启 → Failed
-        if !cfg.auto_restart {
+        // 实际生效的退出模式:auto_restart=false 强制退化为 Never(避免双重表达);
+        // 否则沿用配置 mode。该值在退出码已知后,统一用于下方决策分支。
+        let effective_mode = if cfg.auto_restart {
+            cfg.restart.mode.clone()
+        } else {
+            RestartMode::Never
+        };
+
+        // 未启用自动重启 → Failed(历史行为保持)
+        if matches!(effective_mode, RestartMode::Never) {
             let mut g = handle.inner.lock().unwrap();
             g.state = ProcState::Failed {
                 reason: "进程退出且未启用 auto_restart".into(),
@@ -174,6 +182,26 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
                 at: Utc::now(),
             };
             return;
+        }
+
+        // Unexpected 模式:退出码在白名单内 → 视作预期退出,状态 Stopped,
+        // 不重启。last_exit 已在外部记录;restart_count 不增不减
+        // (自然衰减由 restart_window_secs 决定)。
+        // 注意:exit_code 为 None 时(信号杀掉),-1 哨兵不命中白名单,
+        // 退化为 backoff 路径,与 supervisord 同款限制——子进程被信号杀
+        // 无法区分"主动退出"与"被 SIGKILL",保守起见走 backoff。
+        if matches!(effective_mode, RestartMode::Unexpected) {
+            let exit = exit_code.unwrap_or(-1);
+            if cfg.restart.expected_exit_codes.contains(&exit) {
+                let mut g = handle.inner.lock().unwrap();
+                g.state = ProcState::Stopped;
+                handle.log.push(
+                    LogStream::Stdout,
+                    crate::logs::LEVEL_INFO,
+                    format!("[warden] 预期退出 code={exit},不重启(matched expected_exit_codes)"),
+                );
+                return;
+            }
         }
 
         // 重启决策:超 max_retries 熔断,否则退避后重试

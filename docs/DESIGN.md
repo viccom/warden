@@ -130,12 +130,18 @@ pub struct ServiceConfig {
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct RestartPolicy {
+    #[serde(default)] pub mode: RestartMode,          // 默认 Always
+    #[serde(default = "default_expected_exit_codes")] pub expected_exit_codes: Vec<i32>, // 默认 [0]
     pub max_retries: u32,            // 默认 3
     pub backoff_initial_ms: u64,     // 默认 1000
     pub backoff_max_ms: u64,         // 默认 60000
     pub backoff_factor: f64,         // 默认 2.0
     pub restart_window_secs: u64,    // 默认 60:窗口内重启超 max_retries 才算 Failed
 }
+// mode: Always(任意退出都重启,默认)/ Unexpected(退出码在 expected_exit_codes 内 →
+//   Stopped 不重启,子进程自升级场景;被信号杀死记 -1 哨兵,需覆盖配 -1)/
+//   Never(任意退出不重启);auto_restart=false 时一律按 Never 生效。
+// expected_exit_codes 留空 = 任何退出码都不命中白名单,退化为退避重启,不建议。
 // impl Default 给上述默认值
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -189,6 +195,8 @@ pub struct ProcMetrics {
      │                        ▼                        ▼
      │                      Failed    ┌──── auto_restart=false ────► Failed (exit!=0)
      │                                │
+     │                                │   ┌── mode=unexpected 且 exit ∈ expected_exit_codes ──► Stopped(预期退出,不重启)
+     │                                │   │
      │                                │   ┌── attempt < max ──► Restarting {attempt,next_at}
      │                                └───┤                    │ sleep(backoff)
      │                                    │                    ▼
@@ -204,7 +212,7 @@ pub struct ProcMetrics {
 **关键行为**:
 - **spawn**:`tokio::process::Command::new(command).args(args).envs(env).current_dir(working_dir).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()`。
 - **spawn 失败零重试**:命令不存在/无权限等 spawn 即错 → 直接 `Failed{reason: "spawn 失败:…"}`,不进 backoff 重启决策(区别于进程退出路径;不采用 supervisord 的 FATAL 重试——坏路径重试无意义且徒刷日志)。
-- **退出处理**:wait task `child.wait().await` → 据 `exit_code` + `auto_restart` + 重启计数决策。`restart_window`:距上次启动超过窗口则重置计数(避免长期运行的服务偶尔崩溃也被计入熔断)。
+- **退出处理**:wait task `child.wait().await` → 据 `exit_code` + 生效模式决策(`auto_restart=false` 强制按 `Never`,否则用 `restart.mode`)。`restart_window`:距上次启动超过窗口则重置计数(避免长期运行的服务偶尔崩溃也被计入熔断)。被信号杀死 `exit_code=None`,白名单匹配记 `-1` 哨兵。
 - **backoff**:第 n 次重试等待 `min(initial * factor^(n-1), max)`。例:1000ms → 2000 → 4000 → 8000 … 封顶 60000ms。
 - **stop(Phase 1)**:`child.kill()`(Windows = TerminateProcess,强制终止)。优雅停止(Linux SIGTERM / Windows GenerateConsoleCtrlEvent / Job Object)列 **Phase 4**。
 - **日志接管**:spawn 后起两个 reader task,按行读 stdout/stderr → 推入该服务 `LogHub`(区分 stdout/stderr 标记)。
@@ -288,6 +296,9 @@ auto_start   = true
 auto_restart = false
 # 重启策略缺省走 RestartPolicy::default(),也可显式写:
 # restart = { max_retries = 3, backoff_initial_ms = 1000, backoff_max_ms = 60000, backoff_factor = 2.0, restart_window_secs = 60 }
+# 子进程自升级场景(旧进程 fork 后 exit 0 不当作崩溃)——dotted-key 多行写法:
+# restart.mode = "unexpected"
+# restart.expected_exit_codes = [0]
 ```
 
 - **路径查找优先级**(CLI;桌面版另有独立链,见 `desktop/src-tauri/src/daemon.rs`):

@@ -28,6 +28,8 @@ function blank() {
     auto_restart: false,
     graceful_timeout_secs: 10,
     // 重启策略(崩溃自动重启开启时生效)
+    restart_mode: 'always',
+    expected_exit_codes: '0',
     max_retries: 3,
     backoff_initial_ms: 1000,
     backoff_max_ms: 60000,
@@ -59,6 +61,11 @@ function toCfg() {
     auto_restart: f.value.auto_restart,
     graceful_timeout_secs: parseInt(f.value.graceful_timeout_secs) || 10,
     restart: {
+      mode: f.value.restart_mode,
+      expected_exit_codes: f.value.expected_exit_codes
+        .split(',')
+        .map(s => parseInt(s.trim()))
+        .filter(n => !Number.isNaN(n)),
       max_retries: parseInt(f.value.max_retries) || 0,
       backoff_initial_ms: parseInt(f.value.backoff_initial_ms) || 1000,
       backoff_max_ms: parseInt(f.value.backoff_max_ms) || 60000,
@@ -107,6 +114,8 @@ onMounted(async () => {
       auto_start: !!cfg.auto_start,
       auto_restart: !!cfg.auto_restart,
       graceful_timeout_secs: cfg.graceful_timeout_secs ?? 10,
+      restart_mode: cfg.restart?.mode ?? 'always',
+      expected_exit_codes: (cfg.restart?.expected_exit_codes ?? [0]).join(','),
       max_retries: cfg.restart?.max_retries ?? 3,
       backoff_initial_ms: cfg.restart?.backoff_initial_ms ?? 1000,
       backoff_max_ms: cfg.restart?.backoff_max_ms ?? 60000,
@@ -135,6 +144,10 @@ async function save() {
     if (!cfg.name || !cfg.command) { err.value = '名称和可执行文件路径必填'; return; }
     // toCfg 把空分组转为 null(后端 Option 语义),判斜杠前先防空
     if (cfg.group && cfg.group.includes('/')) { err.value = "分组名不能含 '/'"; return; }
+    // unexpected 模式靠白名单区分预期退出,空列表 = 任何退出都走重启,配置无意义
+    if (cfg.restart.mode === 'unexpected' && cfg.restart.expected_exit_codes.length === 0) {
+      err.value = 'unexpected 模式需至少填一个预期退出码(如 0)'; return;
+    }
     const c = clientFor({ url: form.nodeUrl, token: tokenOf(form.nodeUrl) });
     if (editing) await c.updateService(form.name, cfg);
     else await c.createService(cfg);
@@ -186,6 +199,20 @@ async function save() {
         <div class="field"><label>退避上限(ms)</label><input v-model="f.backoff_max_ms" type="number" min="0" :disabled="!f.auto_restart" /></div>
         <div class="field"><label>退避乘数</label><input v-model="f.backoff_factor" type="number" step="0.1" min="1" :disabled="!f.auto_restart" /></div>
         <div class="field"><label>计数重置窗口(秒)</label><input v-model="f.restart_window_secs" type="number" min="0" :disabled="!f.auto_restart" /></div>
+      </div>
+      <div class="row">
+        <div class="field" :class="{ off: !f.auto_restart }">
+          <label>退出重启模式</label>
+          <select v-model="f.restart_mode" :disabled="!f.auto_restart">
+            <option value="always">always(任意退出都重启)</option>
+            <option value="unexpected">unexpected(预期退出码外才重启)</option>
+            <option value="never">never(任意退出不重启)</option>
+          </select>
+        </div>
+        <div class="field" :class="{ off: !f.auto_restart || f.restart_mode !== 'unexpected' }">
+          <label>预期退出码(逗号分隔,如 0)</label>
+          <input v-model="f.expected_exit_codes" :disabled="!f.auto_restart || f.restart_mode !== 'unexpected'" placeholder="如 0, 130" />
+        </div>
       </div>
 
       <div class="sec">健康检查(TCP)</div>
