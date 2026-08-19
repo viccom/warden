@@ -1,0 +1,66 @@
+name: Release
+
+# 推送 v* 标签触发:双平台构建 → 自动创建 GitHub Release 并附带产物
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build CLI
+        run: cargo build --release -p warden
+      - name: Build desktop
+        working-directory: desktop
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm tauri build --no-bundle
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/warden.exe dist/warden-${{ github.ref_name }}-x86_64-windows.exe
+          cp target/release/warden-desktop.exe dist/warden-desktop-${{ github.ref_name }}-x86_64-windows.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build CLI
+        run: cargo build --release -p warden
+      - name: Stage artifacts
+        run: |
+          mkdir -p dist
+          cp target/release/warden dist/warden-${{ github.ref_name }}-x86_64-linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/
+
+  release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate-release-notes: true
+          files: dist/*

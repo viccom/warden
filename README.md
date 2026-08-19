@@ -1,5 +1,8 @@
 # warden
 
+[![CI](https://github.com/viccom/warden/actions/workflows/ci.yml/badge.svg)](https://github.com/viccom/warden/actions/workflows/ci.yml)
+[![Release](https://github.com/viccom/warden/actions/workflows/release.yml/badge.svg)](https://github.com/viccom/warden/actions/workflows/release.yml)
+
 Rust 进程监护管理工具(supervisord / pm2 风格的 supervisor daemon):统一拉起、监护、监测一组本地进程,提供 CLI、TUI、Web 与桌面客户端四种形态。
 
 ```
