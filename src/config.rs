@@ -64,6 +64,26 @@ pub fn default_config_create_path() -> PathBuf {
     PathBuf::from("config").join(CONFIG_FILE_NAME)
 }
 
+/// 配置基准目录(配置内相对路径的锚点):
+/// - 文件不存在 → None(空配置起步不锚定)
+/// - 文件在 `<base>/config/` 下 → `<base>`(查找链布局:`../xxx` 相对 base)
+/// - 其他位置(如 `$WARDEN_CONFIG` 任意路径) → 文件所在目录
+///
+/// daemon 启动时把进程 cwd 锚定到这里(`run_app_with_shutdown`/桌面版
+/// `daemon::start`):配置内相对 working_dir/command/data_dir/log_dir 与
+/// 启动方式(启动目录/Service 的 System32 cwd)解耦,配置随目录整体迁移。
+pub fn config_base_dir(cfg_path: &Path) -> Option<PathBuf> {
+    if !cfg_path.exists() {
+        return None;
+    }
+    let parent = cfg_path.parent()?;
+    if parent.file_name().is_some_and(|n| n == "config") {
+        parent.parent().map(Path::to_path_buf)
+    } else {
+        Some(parent.to_path_buf())
+    }
+}
+
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
@@ -328,6 +348,50 @@ command = "/bin/true"
             Config::parse("[daemon]\napi_bind = \"127.0.0.1:0\"\ntitle = \"rs-iot 现场监护\"\n")
                 .unwrap();
         assert_eq!(cfg.daemon.title.as_deref(), Some("rs-iot 现场监护"));
+    }
+
+    /// 意图:配置内相对路径必须锚定配置所在基准目录,与启动 cwd 无关——
+    /// config 子目录剥一层(`<base>/config/x.toml` → `<base>`,查找链布局)、
+    /// 平级文件取所在目录($WARDEN_CONFIG 任意位置)、不存在不锚定、嵌套只剥一层。
+    #[test]
+    fn config_base_dir_anchors_relative_paths() {
+        let tmp = std::env::temp_dir().join(format!("warden-base-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let touch = |p: std::path::PathBuf| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "").unwrap();
+            p
+        };
+
+        // 文件不存在 → None(无配置不锚定)
+        assert_eq!(
+            config_base_dir(&tmp.join("nope").join("services.toml")),
+            None
+        );
+
+        // `<base>/config/x.toml` → `<base>`(查找链布局:exe_dir / cwd / 平台位置)
+        let f = touch(
+            tmp.join("deploy")
+                .join("warden")
+                .join("config")
+                .join(CONFIG_FILE_NAME),
+        );
+        assert_eq!(config_base_dir(&f), Some(tmp.join("deploy").join("warden")));
+
+        // 平级文件($WARDEN_CONFIG 任意路径) → 文件所在目录
+        let f = touch(tmp.join("anywhere").join("my.toml"));
+        assert_eq!(config_base_dir(&f), Some(tmp.join("anywhere")));
+
+        // 嵌套 config 只剥一层:`<x>/config/config/x.toml` → `<x>/config`
+        let f = touch(
+            tmp.join("x")
+                .join("config")
+                .join("config")
+                .join(CONFIG_FILE_NAME),
+        );
+        assert_eq!(config_base_dir(&f), Some(tmp.join("x").join("config")));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

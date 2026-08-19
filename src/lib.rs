@@ -63,12 +63,27 @@ pub async fn run_app(config_path: Option<PathBuf>) -> anyhow::Result<()> {
 }
 
 /// 核心:由外部传入 shutdown token(前台=Ctrl-C,Service=SCM Stop)。
-/// init tracing → build state → start_auto → metrics → axum serve(graceful)→ stop_all。
+/// cwd 锚定 → init tracing → build state → start_auto → metrics → serve → stop_all。
 pub async fn run_app_with_shutdown(
     cfg: config::Config,
     config_path: Option<PathBuf>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
+    // cwd 锚定:配置内相对路径(working_dir/command/data_dir/log_dir)统一锚定
+    // 配置基准目录,与启动方式解耦——Service 模式 cwd=System32、用户从任意目录
+    // `warden run` 时,`../xxx` 不再解析到部署树之外(桌面版 daemon::start 同款)。
+    // 显式路径优先,否则按 find 链定位(build_state 内部同一解析,锚定后一致)。
+    let cfg_file = config_path
+        .clone()
+        .or_else(config::Config::find_config_path);
+    if let Some(base) = cfg_file.as_deref().and_then(config::config_base_dir) {
+        if let Err(e) = std::env::set_current_dir(&base) {
+            tracing::warn!(
+                "[warden] cwd 锚定到 {} 失败({e}),相对路径按启动 cwd 解析",
+                base.display()
+            );
+        }
+    }
     let bind = cfg.daemon.api_bind.clone();
     let _log_guard = init_tracing(&cfg.daemon.log_dir);
     tracing::info!(

@@ -295,6 +295,7 @@ auto_restart = false
   2. `<exe_dir>/config/services.toml`
   3. `./config/services.toml`
   4. 平台标准位置(用户级,`directories` ProjectDirs;Windows `%APPDATA%\warden\config\services.toml`,Linux `~/.config/warden/services.toml`)
+- **cwd 锚定**(`config_base_dir`,CLI 与桌面版同规则):daemon 启动时把进程 cwd 固定到配置基准目录——文件在 `<base>/config/` 下取 `<base>`,否则取文件所在目录。配置内相对路径(working_dir/command/data_dir/log_dir)与启动方式解耦:从任意目录 `warden run`、Service 模式(cwd=System32)、桌面版任意 exe 位置,解析结果一致;整目录迁移无需改配置。
 - **校验**:name 非空、唯一、字符白名单(禁 `/\:*?"<>|`);command 非空(不预检路径——spawn 失败零重试进 Failed,见 §6);group 不含 `/`(组级 API 路由参数)。坏项**跳过并 warn**(对齐 serviceMgr-tui parser 容错,不因一个坏服务拖垮整体加载)。
 - **Default**:`#[serde(default)]` + 手写 `impl Default`,partial 配置安全(对齐 rs-iot `config.rs`)。
 

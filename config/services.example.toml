@@ -3,9 +3,12 @@
 # 用法(在部署根目录):
 #   warden run --config config/services.example.toml
 #
-# 路径为相对 warden 进程 cwd 的示例(生产部署常见布局:bin/ rs-iot/ work/ 与
-# warden 同级);按实际环境调整。[daemon] 控制监护器自身;每个 [[service]]
-# 是一个被监护进程。服务 1 演示全部字段,服务 2/3 为最小配置对照。
+# 路径为相对路径示例(生产部署常见布局:bin/ rs-iot/ work/ 与 warden 同级)。
+# warden 启动时把进程 cwd 锚定到配置基准目录(本文件在 <base>/config/ 下 →
+# base),相对路径与启动目录解耦——从任意目录 `warden run` / Service 模式
+# (System32 cwd)结果一致,整目录迁移无需改配置。
+# [daemon] 控制监护器自身;每个 [[service]] 是一个被监护进程。
+# 服务 1 演示全部字段,服务 2/3 为最小配置对照。
 
 [daemon]
 api_bind      = "127.0.0.1:8789"          # HTTP API 监听地址
