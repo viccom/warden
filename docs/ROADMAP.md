@@ -2,8 +2,8 @@
 
 > **跨会话接续入口**:新会话先读本文件的「当前进度」,再按需查 [`DESIGN.md`](./DESIGN.md) 对应章节,然后从下一个 `[ ]` 步骤继续。每完成一步把 `[ ]` 改 `[x]` 并更新「最后更新」日期,必要时写「变更日志」。
 
-- **最后更新**:2026-08-19
-- **当前阶段**:Phase 5 桌面版 P1 完成 + 稳定性批次(唯一数据源重构/配置隔离/白屏修复/相对路径锚定/启动提速/离线节点禁操作/自定义标题栏与图标);warden 90 测试绿 + 双 crate clippy/fmt clean
+- **最后更新**:2026-08-21
+- **当前阶段**:Phase 5 桌面版 P1 完成 + 稳定性批次(唯一数据源重构/配置隔离/白屏修复/相对路径锚定/启动提速/离线节点禁操作/自定义标题栏与图标)+ RestartPolicy 退出模式扩展;warden 测试 95 通过 + 1 ignored(共 96)+ 双 crate clippy/fmt clean
 - **下一步**:桌面版 P2(metrics 图表/系统通知/自动发现)或自升级(取舍讨论见 RESEARCH-SELF-UPDATE.md)或 Phase 2 剩余(systemd 实测)
 
 ---
@@ -135,3 +135,5 @@
 - **2026-08-19(cwd 锚定下沉 CLI ✅)**:桌面版的「配置基准目录锚定」下沉到 lib,CLI 与桌面版同规则——`config_base_dir` 上移 `warden::config`(桌面 daemon.rs 删本地副本,单测随迁 4 用例);`run_app_with_shutdown` 顶部(前台 Ctrl-C 与 Service 模式共享入口)把进程 cwd 锚定到配置基准目录:Service 模式 cwd=System32、用户从任意目录 `warden run` 时,配置内相对路径(working_dir/command/data_dir/log_dir)不再解析到部署树之外,整目录迁移无需改配置。不引入 `{BASEDIR}` 类占位符语法(配置继续写相对路径,启动时锚定,对齐 supervisord `%(here)s` 意图但零新语法)。验证:从无关 cwd 显式 --config 启动真实 exe,相对路径服务 running 且 data/logs 落在部署目录;90 测试全绿 + clippy/fmt clean。文档同步:DESIGN §9 锚定条目、example 头注。
 - **2026-08-19(全部节点视图禁批量操作 ✅)**:用户规则——「全部节点」是观察视图:允许过滤与单服务启停,禁止跨节点批量动作。实现:「＋ 新增服务」(目标节点不明确,旧实现静默回落内嵌节点)、「全部启动/停止」、组 chips 的组级启停迷你按钮,在全部节点视图一律禁用并以 title 提示「请先选择具体节点」;空列表文案同步区分。浏览器 harness 验证:默认全部节点视图三按钮禁用 → 选中节点后禁用原因正确切换为离线文案(两条规则独立分流)。已官方流程重建部署。
 - **2026-08-19(v0.1.0 发布设施 ✅)**:GitHub Actions 双工作流——`ci.yml`(push/PR main,windows-latest:fmt check + clippy -D warnings + 全量测试)、`release.yml`(推 v* 标签触发:windows 构建 CLI + 桌面版(pnpm tauri build --no-bundle)、linux 构建 CLI,softprops 自动建 Release 附产物 + 自动生成 notes);README 加 CI/Release 徽章;desktop/README 补「全部节点=观察视图」规则行。tag v0.1.0(对齐 Cargo 0.1.0),仓库 github.com/viccom/warden 公开发布。
+- **2026-08-19(RestartPolicy 退出模式扩展 ✅,08-21 补记)**:`restart.mode` 三态——"always"(默认,任意退出重启)/"unexpected"(退出码在 `expected_exit_codes` 内 → Stopped 不重启,子进程 fork 后自退出完成升级的场景;被信号杀死记 -1 哨兵,需显式配 -1 覆盖)/"never";`auto_restart=false` 一律按 Never 生效。model/config/config_edit/proc/桌面 ServiceForm/example 全链路 + e2e 4 项(unexpected 预期退出不重启/意外退出仍重启/always 回归/never 等价),测试总数 92→96(95 通过 + 1 ignored;此前文档记 90 系少计 2,本次审计核准)+ clippy/fmt clean;README 快速开始与 DESIGN §5 已随代码同步。代码见 21ad3ec;本条与当日 CI 修复(d36d65e,固定 pnpm@8.14.0)为文档规范审计后补记。
+- **2026-08-21(文档规范审计修复)**:全面核对 9 份文档与代码的一致性,修复——① CLAUDE.md「stop 只杀直接子进程/孙子孤儿」已知局限已过时(Job Object 杀树 08-14 已完成),改为进程树语义描述;CLAUDE.md 模块表补 `service/`/`tui/`/health/signal/routes_ui,修正「子命令占位」「单 crate」「Phase 4 rust-embed」等滞后描述。② DESIGN §6 stop 描述与 §8 对齐(优雅停止现状);§3 技术栈表补 8 个已引入依赖;§4 目录树更新为 workspace 现状;§5.2/§6 `ProcRuntime`+`RwLock` 更正为 `ProcHandle`+`Mutex<ProcInner>`(model.rs 头注释同步);§12 单 crate 决策更新。③ ROADMAP 补 21ad3ec 变更日志、测试数核准(95 通过 + 1 ignored,共 96)。④ README 文档索引补 PLAN-GROUP-PRIORITY-PORTS.md、测试数更正。⑤ PLAN-DESKTOP 状态改「P1 已完成」、配置查找链补 08-18 的 `<cwd>/warden/config/` 级与 cwd 锚定说明。纯文档 + 1 行注释改动,测试 95 通过 + 1 ignored、fmt/clippy clean 复核。

@@ -1,7 +1,7 @@
 //! warden 数据模型。
 //!
 //! 配置层(`ServiceConfig` 等,从 toml 反序列化)与运行态(`ProcState`/`ProcMetrics`)。
-//! `ProcRuntime`(含子进程句柄与 LogHub)定义在 `supervisor` 模块,因为它聚合运行时资源。
+//! `ProcHandle`(含 `ProcInner` 运行态与 LogHub)定义在 `supervisor` 模块,因为它聚合运行时资源。
 
 use std::collections::HashMap;
 

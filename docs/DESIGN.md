@@ -43,7 +43,7 @@
         TUI (Phase 3) / Web (Phase 4) 后续接入
 ```
 
-**数据流**:`config.toml` → `Vec<ServiceConfig>` → Supervisor 为每个服务建 `ProcRuntime`(状态 + LogHub + 句柄)→ 用户/外部经 HTTP 触发 start/stop/restart → Supervisor 操作子进程、状态机流转 → API 查询返回实时状态/日志/指标。
+**数据流**:`config.toml` → `Vec<ServiceConfig>` → Supervisor 为每个服务建 `ProcHandle`(LogHub + `Mutex<ProcInner>` 运行态)→ 用户/外部经 HTTP 触发 start/stop/restart → Supervisor 操作子进程、状态机流转 → API 查询返回实时状态/日志/指标。
 
 ## 3. 技术栈
 
@@ -63,43 +63,55 @@
 | 资源采集 | sysinfo | 0.32 |
 | 时间 | chrono | 0.4 (serde) |
 | 其他 | async-trait / directories | 0.1 / 5 |
+| 配置文档级编辑 | toml_edit | 0.20(CRUD 写回,保注释) |
+| 端口采集 | netstat2 | 0.11 |
+| 输出编码 | encoding_rs | 0.8(GBK/CP936) |
+| OS 服务 | windows-service / windows-sys | 0.7 / 0.59(Windows target) |
+| TUI | ratatui / crossterm | 0.30 / 0.28 |
+| API 客户端 | reqwest / reqwest-eventsource | 0.12 / 0.6 |
+| 取消信号 | tokio-util | 0.7(rt,CancellationToken) |
 
-Phase 1 **不引入**:ratatui/crossterm (P3 TUI)、windows-service (P2 OS 注册)、encoding_rs (P2 Windows 编码)、reqwest (P3 TUI 客户端)。
-
-edition 2021 / rust-version 1.81。
+edition 2021 / rust-version 1.81。Web UI 用 `include_str!` 零依赖嵌入(未引入 rust-embed);桌面版(Tauri 2)为 workspace 成员,见 `desktop/`。
 
 ## 4. 目录结构
 
 ```
-warden/
-├── Cargo.toml                  单 crate(lib + bin)
-├── rust-toolchain.toml         stable + rustfmt + clippy
+warden/                          workspace:根 crate warden + desktop/(桌面版)
+├── Cargo.toml                   workspace + 根 crate(lib + bin)+ 测试 helper bins
+├── rust-toolchain.toml          stable + rustfmt + clippy
 ├── .gitignore
-├── docs/
-│   ├── DESIGN.md               本文档(架构/模型/API/决策)
-│   └── ROADMAP.md              分 Phase 路线图 + 进度 checklist
-├── config/services.example.toml   rs-iot 三件套预置示例
+├── docs/                        DESIGN/ROADMAP/PLAN-*/RESEARCH-*/TESTING-*
+├── config/services.example.toml rs-iot 三件套预置示例(+ crash/test 演示配置)
+├── web/index.html               内置 Web UI 单页(routes_ui 经 include_str! 嵌入)
 ├── src/
-│   ├── main.rs                 clap CLI(run 本次实现;tui/install/service 占位)
-│   ├── lib.rs                  库 re-export(便于集成测试)
-│   ├── config.rs               toml 配置 + Default + 路径查找 + 校验
-│   ├── error.rs                thiserror WardenError + impl IntoResponse
-│   ├── model.rs                ServiceConfig/ProcState/ProcRuntime/RestartPolicy/HealthCheck
-│   ├── logs.rs                 LogHub(VecDeque 环缓冲 + broadcast + 文件轮转)
+│   ├── main.rs                  clap CLI(run/tui/install/uninstall/service)
+│   ├── lib.rs                   库入口;run_app / serve_with_shutdown 编排
+│   ├── config.rs                toml 配置 + Default + 路径查找 + cwd 锚定 + 校验
+│   ├── config_edit.rs           配置文件文档级编辑(toml_edit;CRUD 写回唯一数据源)
+│   ├── error.rs                 thiserror WardenError + impl IntoResponse
+│   ├── model.rs                 ServiceConfig/ProcState/RestartPolicy/HealthCheck/ProcMetrics
+│   ├── logs.rs                  LogHub(VecDeque 环缓冲 + broadcast + 文件轮转)
+│   ├── service/                 OS 自注册(windows.rs:SCM+UAC;systemd.rs:框架已写未实测)
 │   ├── supervisor/
-│   │   ├── mod.rs              Supervisor 引擎(DashMap<name, ProcRuntime>)
-│   │   ├── proc.rs             单进程 spawn/wait/restart/backoff 状态机
-│   │   └── metrics.rs          sysinfo 周期采样
+│   │   ├── mod.rs               Supervisor 引擎(DashMap<name, Arc<ProcHandle>>)
+│   │   ├── proc.rs              单进程 spawn/wait/restart/backoff 状态机
+│   │   ├── metrics.rs           sysinfo 周期采样(全表刷新,含端口刷新触发)
+│   │   ├── health.rs            TCP 健康检查 + webhook 告警
+│   │   ├── ports.rs             监听端口发现(netstat2 采集 + PID 子树过滤)
+│   │   └── signal.rs            优雅停止信号 + Job Object 进程树 + 隐藏 console
+│   ├── tui/                     ratatui 终端客户端(api/mod/ui)
 │   └── api/
-│       ├── mod.rs              build_router + AppState + token 中间件
-│       ├── auth.rs             静态 token 鉴权(Header Bearer)
-│       ├── routes_service.rs   services 列表/详情/start/stop/restart/reload/all
-│       ├── routes_logs.rs      logs 快照 + SSE 流
-│       └── routes_health.rs    daemon 健康
-└── tests/
-    ├── common/mod.rs           测试 harness(spawn 真被监护进程用 sleep/ping)
-    ├── api_flow.rs             API 集成测试(tower oneshot)
-    └── supervisor_e2e.rs       监护引擎 e2e
+│       ├── mod.rs               build_router + AppState + token 中间件 + Tauri CORS
+│       ├── auth.rs              静态 token 鉴权(Header Bearer)
+│       ├── routes_service.rs    services CRUD + start/stop/restart + 组级启停
+│       ├── routes_logs.rs       logs 快照 + SSE 流
+│       ├── routes_health.rs     daemon 健康(版本/计数/title)
+│       └── routes_ui.rs         内置 Web UI 单页
+├── tests/                       集成测试(api_flow/supervisor_e2e/graceful_stop_e2e/
+│                                group_priority_e2e/ports_e2e/crud_config_e2e/
+│                                shutdown_e2e/shutdown_console_e2e/tui_api_e2e/read_example)
+│   └── helpers/                 测试辅助 bin(graceful/gbk/stamp/port_listener target)
+└── desktop/                     Tauri 2 桌面版(src-tauri Rust + src Vue3,见 PLAN-DESKTOP.md)
 ```
 
 ## 5. 核心数据模型(`model.rs`)
@@ -166,20 +178,30 @@ pub enum ProcState {
     Restarting { attempt: u32, next_at: DateTime<Utc> },
 }
 
-pub struct ProcRuntime {
-    pub config: ServiceConfig,
-    pub state: ProcState,           // RwLock 保护,API 读快照
-    pub child: Option<ChildHandle>, // tokio::process::Child
+```rust
+pub struct ProcHandle {
+    pub log: Arc<LogHub>,               // 该服务的日志收集器(锁外共享)
+    pub(crate) inner: Mutex<ProcInner>, // 单锁保护全部运行态(config 同锁,更新原子)
+}
+
+pub(crate) struct ProcInner {
+    pub config: ServiceConfig,               // 当前配置(update 运行中可替换,下次启动生效)
+    pub state: ProcState,
     pub restart_count: u32,
     pub last_started_at: Option<DateTime<Utc>>,
-    pub log: Arc<LogHub>,           // 该服务的日志收集器
-    pub metrics: Option<ProcMetrics>,
+    pub metrics: ProcMetrics,
+    pub health: HealthStatus,                // health task 周期填充
+    pub last_exit: Option<LastExit>,         // 最近一次自然退出(主动 stop 不记)
+    pub ports: Vec<ListeningSocket>,         // 监听端口快照(metrics task 刷新,含孙进程)
+    pub cancel: Option<CancellationToken>,
+    pub task: Option<JoinHandle<()>>,        // 监护 task(子进程句柄归其独占,避免锁内 await)
+    pub job: Option<JobTree>,                // 进程树追踪(Windows Job Object / Unix 进程组)
 }
 
 pub struct ProcMetrics {
     pub cpu_percent: f32,
     pub memory_kb: u64,
-    pub sampled_at: DateTime<Utc>,
+    pub sampled_at: Option<DateTime<Utc>>,
 }
 ```
 
@@ -214,13 +236,13 @@ pub struct ProcMetrics {
 - **spawn 失败零重试**:命令不存在/无权限等 spawn 即错 → 直接 `Failed{reason: "spawn 失败:…"}`,不进 backoff 重启决策(区别于进程退出路径;不采用 supervisord 的 FATAL 重试——坏路径重试无意义且徒刷日志)。
 - **退出处理**:wait task `child.wait().await` → 据 `exit_code` + 生效模式决策(`auto_restart=false` 强制按 `Never`,否则用 `restart.mode`)。`restart_window`:距上次启动超过窗口则重置计数(避免长期运行的服务偶尔崩溃也被计入熔断)。被信号杀死 `exit_code=None`,白名单匹配记 `-1` 哨兵。
 - **backoff**:第 n 次重试等待 `min(initial * factor^(n-1), max)`。例:1000ms → 2000 → 4000 → 8000 … 封顶 60000ms。
-- **stop(Phase 1)**:`child.kill()`(Windows = TerminateProcess,强制终止)。优雅停止(Linux SIGTERM / Windows GenerateConsoleCtrlEvent / Job Object)列 **Phase 4**。
+- **stop(优雅,2026-08-14 起)**:发信号(Linux SIGTERM / Windows `CTRL_BREAK_EVENT`,独立进程组精确投递;CTRL_C 不跨 group 是 Windows quirk)→ 等待 `graceful_timeout_secs` → 超时 `TerminateJobObject` 强杀整棵进程树。每个子进程一个 Job Object(`KILL_ON_JOB_CLOSE`):warden 崩溃/退出时子进程树全死,无孤儿。无 console 宿主(Service 会话 0 / 桌面版 GUI)经 `ensure_hidden_console` 保证 CTRL_BREAK 可投递。
 - **日志接管**:spawn 后起两个 reader task,按行读 stdout/stderr → 推入该服务 `LogHub`(区分 stdout/stderr 标记)。
-- **metrics**:sysinfo 每 2s 按已记录的 PID 采 CPU/内存,写入 `ProcRuntime.metrics`。
+- **metrics**:sysinfo 每 2s 全表刷新,按服务 PID 子树采 CPU/内存,写入 `ProcInner.metrics`(顺带刷新 `ports`)。
 - **有序启停**:`start_all`/`start_auto` 按 priority 升序(name 字典序 tie-break)启动 + **就绪推进**(每服务等到离开 Starting、上限 15s 再启动下一个,Failed/Restarting 不阻塞后续);`stop_all` 逆序(被依赖方最后停)。见 `Supervisor::ordered_names`/`start_ordered`。
 - **监听端口发现**(`supervisor/ports.rs`):metrics task 周期采集全系统 socket 表(netstat2,Windows GetExtendedTcp/UdpTable / Linux netlink)→ 按**服务 PID 子树**(含孙进程,启动器形态)过滤 TCP LISTEN / UDP 绑定 → 写入 `ProcInner.ports`,经 `ServiceStatus.listening_ports` 透出。UDP 仅"已绑定"语义(无 listen),不支持 UDP 健康检查。
 
-**并发模型**:Supervisor 持 `DashMap<String, ProcRuntime>`。状态读写用 `RwLock`/`Mutex` 保护最小临界区;长操作(spawn/wait/backoff sleep)在独立 tokio task,不阻塞 API 线程。这与 rs-iot 的 InstanceManager(states/handles/configs 多 DashMap)模式一致。
+**并发模型**:Supervisor 持 `DashMap<String, Arc<ProcHandle>>`。每个服务的运行态(`ProcInner`:config/state/metrics/…)由单把 `Mutex` 保护(与 config 同锁,运行中 update 原子);长操作(spawn/wait/backoff sleep)在独立 tokio task,不阻塞 API 线程。这与 rs-iot 的 InstanceManager(states/handles/configs 多 DashMap)模式一致。
 
 ## 7. 日志收集(`logs.rs` —— LogHub)
 
@@ -338,7 +360,7 @@ auto_restart = false
 | 鉴权 | 静态 token(P1) | 无前端本地工具,JWT 太重;P4 加 Web 再升级 |
 | 运行态持久化 | 不持久化;**配置文件是唯一数据源**(2026-08-17 重构) | CRUD 经 `config_edit`(toml_edit 保注释)直接写回配置文件;daemon 重启只按 auto_start 拉起(supervisord 语义)。曾有的 runtime overlay + desired_state 已废除,启动时一次性迁移(旧文件改 .bak)——单数据源,删文件即清空,无"幽灵服务" |
 | handler 错误 | `Result + IntoResponse` | 比 rs-iot 手写 `Json<Value>` 规整,新项目做改进(规则 6 暴露而非折中) |
-| 单 crate(lib+bin) | MVP 不拆 workspace | 简洁优先;P3 加 TUI 再评估拆 `warden-tui` crate |
+| 单 crate(lib+bin)→ workspace | Phase 5 桌面版加入 `desktop/src-tauri` 成员 | 根命令行为不变;TUI 留在根 crate,桌面版 path 依赖复用 lib |
 | TUI/Web 接入 | 连 HTTP API | API 契约先行,前端形态可换;TUI 用 reqwest 连本地/远程 API |
 
 ## 13. 参考项目

@@ -11,21 +11,23 @@ warden 是一个 **Rust 进程监护管理工具**(supervisord / pm2 风格的 s
 - daemon 自身通过 OS 服务注册(Windows Service / systemd)开机自启(**Phase 2**,反向复用 serviceMgr-tui 的注册能力注册自己)
 - 所有能力经本地 HTTP API 暴露,**API 契约先行**;TUI(Phase 3)/ Web(Phase 4)连同一 API
 
-**单 crate(lib + bin)**:
+**根 crate(lib + bin;workspace 另含 `desktop/src-tauri` 桌面成员,根命令行为不变)**:
 
 | 模块 | 职责 |
 |---|---|
-| `main.rs` | clap CLI(`run` 前台跑 daemon;`tui`/`install`/`uninstall`/`service` 占位待 Phase 2/3) |
+| `main.rs` | clap CLI 子命令:`run` 前台 daemon / `tui` 终端客户端 / `install`/`uninstall`(UAC 自提权)/ `service`(OS 服务模式) |
 | `lib.rs` | 库入口;`run_app` 编排(config→tracing→auto_start→metrics→axum→graceful shutdown) |
 | `config.rs` | toml 解析 + Default + 路径查找(`$WARDEN_CONFIG`→exe_dir→cwd→平台标准位置)+ 校验(坏项跳过并 warn) |
 | `config_edit.rs` | 配置文件文档级编辑(toml_edit,保注释/排版)+ 临时文件原子写 + 旧 overlay/desired 一次性迁移;CRUD 写回唯一数据源 |
 | `error.rs` | `WardenError`(thiserror + `#[non_exhaustive]` + `impl IntoResponse`)+ `WResult<T>` |
 | `model.rs` | `ServiceConfig` / `ProcState` / `RestartPolicy` / `HealthCheck` / `ProcMetrics` |
 | `logs.rs` | `LogHub`(VecDeque 环缓冲 2000 + broadcast 256 + 按日轮转文件) |
-| `supervisor/` | 监护引擎:`mod`(Supervisor + ProcHandle + ServiceStatus + 有序启停)+ `proc`(状态机/backoff/spawn/wait)+ `metrics`(sysinfo 采样)+ `ports`(监听端口发现:netstat2 采集 + PID 子树过滤) |
-| `api/` | axum `build_router` + token 鉴权中间件 + `routes_service`/`routes_logs`/`routes_health` + SSE |
+| `supervisor/` | 监护引擎:`mod`(Supervisor + ProcHandle + ServiceStatus + 有序启停)+ `proc`(状态机/backoff/spawn/wait)+ `metrics`(sysinfo 采样)+ `ports`(监听端口发现:netstat2 采集 + PID 子树过滤)+ `health`(TCP 探测 + webhook 告警)+ `signal`(优雅停止信号 + Job Object 进程树 + 隐藏 console) |
+| `service/` | OS 自注册:Windows(`sc.exe` + `define_windows_service` + SCM 控制 + UAC 提权)/ systemd(框架已写,未实测) |
+| `tui/` | ratatui 终端客户端:`api`(reqwest + SSE)/ `ui`(服务表格/详情/日志渲染)/ `mod`(事件循环) |
+| `api/` | axum `build_router` + token 鉴权中间件 + Tauri CORS + `routes_service`/`routes_logs`/`routes_health`/`routes_ui`(内置 Web 单页)+ SSE |
 
-**技术栈**(对齐 rs-iot 版本栈,便于统一维护):tokio 1 / axum 0.8 / serde+toml / thiserror+anyhow / clap / tracing(+appender)/ dashmap / sysinfo。edition 2021, rust-version 1.81。Phase 2 起:`windows-service` / `encoding_rs`;Phase 3:`ratatui` / `reqwest`;Phase 4:`rust-embed`。
+**技术栈**(对齐 rs-iot 版本栈,便于统一维护):tokio 1 / axum 0.8 / serde+toml(+`toml_edit` 保注释写回)/ thiserror+anyhow / clap / tracing(+appender)/ dashmap / sysinfo / `encoding_rs`(GBK 解码)/ `windows-service`(OS 注册)/ `ratatui`+`reqwest`(TUI)/ `netstat2`(端口发现)。edition 2021, rust-version 1.81。Web UI 用 `include_str!` 零依赖嵌入(未引入 rust-embed);桌面版(Tauri 2)见 `desktop/`。
 
 **参考项目**:`D:\Go_Codes\serviceMgr-tui`(Go,OS 服务注册 + TUI 的蓝本)、`E:\github.com\rs-iot`(技术栈与代码风格来源)。
 
@@ -75,7 +77,7 @@ curl "http://127.0.0.1:8789/api/v1/services/<name>/logs?tail=100"
 - 改 API(`api/`):跑 `tests/api_flow.rs`(`tower::ServiceExt::oneshot` 打 `build_router`,含鉴权拒绝/放行 + health 白名单)。
 - 改配置语义(`config.rs`):跑 `config::tests`(解析/Default/坏项跳过/覆盖)。
 - 新增逻辑补 `#[cfg(test)]` 内联单测或 `tests/` 集成测试。集成测试用 `tests/common`(`long_runner`/`quick_fail` 跨平台无害命令),**勿固定端口、勿写仓库 `./data/`/`./logs/`**。
-- **已知局限(必读)**:`stop` 用 `TerminateProcess` **只杀直接子进程**;被监护程序若 spawn 子进程(如 `cmd /c reasonix → node`),孙子会残留孤儿(e2e 实测跑满 ping 时长)。Phase 4 用 Windows Job Object(KILL_ON_JOB_CLOSE)解决。**测试一律用直接进程(ping/sleep)避免孤儿**。
+- **进程树语义(必读)**:每个子进程一个 Job Object(Windows,`KILL_ON_JOB_CLOSE`)。`stop` = 优雅信号(CTRL_BREAK/SIGTERM)→ `graceful_timeout_secs` 超时 → `TerminateJobObject` 强杀**整棵进程树**(含孙进程);warden 自身崩溃/退出时子进程树全死,无孤儿。测试可放心覆盖孙进程场景(`port_listener_target --grandchild`)。
 
 ## 常见流程
 
@@ -88,7 +90,6 @@ curl "http://127.0.0.1:8789/api/v1/services/<name>/logs?tail=100"
 
 - `target/`、`logs/`、`data/`、`*.log` 已 `.gitignore`,**不要提交**。
 - `config/services.example.toml` 的 `auth_token` 是示例值,生产部署必须换;daemon 默认 `bind 127.0.0.1`(本地),远程暴露必须配非空 `auth_token`。
-- 被 `stop` 的进程若 spawn 了子进程,孙子会孤儿(已知局限,见验证规则)。
 
 ## Skill 优先使用(Rust 开发)
 

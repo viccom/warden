@@ -1,6 +1,6 @@
 # 实施方案:warden 桌面版(Tauri 2)
 
-> **状态**:方案定稿,分期实施。P1 = 本次交付。
+> **状态**:P1 已完成(2026-08-15,实施记录见文末);P2(metrics 图表/系统通知/自动发现)未开始。
 > **日期**:2026-08-15
 > **需求来源**:用户三条——①覆盖 CLI 版功能但只前台运行、全局单实例、最小化托盘/托盘退出;②默认管理自己子进程 + 可添加其他 warden 节点(本机 CLI / 远程)统一管理;③前端 UI 重写(不复用 CLI web),支持 group 过滤、group 级启停,设计自由度大。
 
@@ -38,7 +38,7 @@ warden/                     # 现有 crate 不动,root Cargo.toml 追加 [worksp
 - 单实例:二次启动聚焦已有窗口(tauri-plugin-single-instance 必须最先注册)
 - 开机自启:不做(需求明确不需要 OS service;Tauri autostart 插件留作 P2)
 
-**配置**:(2026-08-17 更新)内嵌 daemon 默认配置文件名独立为 `services.desktop.toml`,查找链 `$WARDEN_CONFIG` → `<exe_dir>/config/` → `<app_data>/config/`(不落 cwd 与 CLI 平台位置,防拾取 CLI 的 services.toml;格式与 CLI 完全兼容);`config_path` 传解析路径,API reload 重读同一文件。data_dir/log_dir 仍重定向桌面应用数据目录。
+**配置**:(2026-08-18 更新)内嵌 daemon 默认配置文件名独立为 `services.desktop.toml`,查找链 `$WARDEN_CONFIG` → `<exe_dir>/config/` → `<cwd>/warden/config/` → `<app_data>/config/`(不落 CLI 的 `./config/` 直查与平台标准位置,防拾取 CLI 的 services.toml;格式与 CLI 完全兼容);`config_path` 传解析路径,API reload 重读同一文件。data_dir/log_dir 仍重定向桌面应用数据目录;启动时把 cwd 锚定到配置基准目录,配置内相对路径与启动方式解耦(2026-08-19 已下沉 lib,与 CLI 同规则)。
 
 ## 3. daemon 侧扩展(P1 前置,TDD)
 

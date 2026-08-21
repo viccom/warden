@@ -79,7 +79,7 @@ priority     = 1
 ## 开发
 
 ```bash
-cargo test                     # 全测(单测 + 集成,90 个)
+cargo test                     # 全测(单测 + 集成,共 96 个:95 通过 + 1 个 #[ignore])
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all
 
@@ -92,6 +92,7 @@ cd desktop && pnpm install && pnpm tauri build --no-bundle
 - [`docs/DESIGN.md`](./docs/DESIGN.md) —— 架构、数据模型、API 与关键决策(权威参考)
 - [`docs/ROADMAP.md`](./docs/ROADMAP.md) —— 分 Phase 进度与变更日志
 - [`docs/PLAN-DESKTOP.md`](./docs/PLAN-DESKTOP.md) —— 桌面版实施方案
+- [`docs/PLAN-GROUP-PRIORITY-PORTS.md`](./docs/PLAN-GROUP-PRIORITY-PORTS.md) —— 分组/优先级/端口发现实施方案(已实施)
 - [`docs/RESEARCH-SELF-UPDATE.md`](./docs/RESEARCH-SELF-UPDATE.md) —— 自升级技术调研(未实施)
 - [`docs/TESTING-GBK.md`](./docs/TESTING-GBK.md) —— GBK 解码手动测试指南
 
