@@ -79,7 +79,7 @@ priority     = 1
 ## 开发
 
 ```bash
-cargo test                     # 全测(单测 + 集成,共 96 个:95 通过 + 1 个 #[ignore])
+cargo test                     # 全测(单测 + 集成,共 97 个:96 通过 + 1 个 #[ignore])
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all
 

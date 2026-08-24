@@ -2,8 +2,8 @@
 
 > **跨会话接续入口**:新会话先读本文件的「当前进度」,再按需查 [`DESIGN.md`](./DESIGN.md) 对应章节,然后从下一个 `[ ]` 步骤继续。每完成一步把 `[ ]` 改 `[x]` 并更新「最后更新」日期,必要时写「变更日志」。
 
-- **最后更新**:2026-08-21
-- **当前阶段**:Phase 5 桌面版 P1 完成 + 稳定性批次(唯一数据源重构/配置隔离/白屏修复/相对路径锚定/启动提速/离线节点禁操作/自定义标题栏与图标)+ RestartPolicy 退出模式扩展;warden 测试 95 通过 + 1 ignored(共 96)+ 双 crate clippy/fmt clean
+- **最后更新**:2026-08-24
+- **当前阶段**:Phase 5 桌面版 P1 完成 + 稳定性批次(唯一数据源重构/配置隔离/白屏修复/相对路径锚定/启动提速/离线节点禁操作/自定义标题栏与图标)+ RestartPolicy 退出模式扩展与 dotted-key 部分覆盖;warden 测试 96 通过 + 1 ignored(共 97)+ 双 crate clippy/fmt clean
 - **下一步**:桌面版 P2(metrics 图表/系统通知/自动发现)或自升级(取舍讨论见 RESEARCH-SELF-UPDATE.md)或 Phase 2 剩余(systemd 实测)
 
 ---
@@ -137,3 +137,4 @@
 - **2026-08-19(v0.1.0 发布设施 ✅)**:GitHub Actions 双工作流——`ci.yml`(push/PR main,windows-latest:fmt check + clippy -D warnings + 全量测试)、`release.yml`(推 v* 标签触发:windows 构建 CLI + 桌面版(pnpm tauri build --no-bundle)、linux 构建 CLI,softprops 自动建 Release 附产物 + 自动生成 notes);README 加 CI/Release 徽章;desktop/README 补「全部节点=观察视图」规则行。tag v0.1.0(对齐 Cargo 0.1.0),仓库 github.com/viccom/warden 公开发布。
 - **2026-08-19(RestartPolicy 退出模式扩展 ✅,08-21 补记)**:`restart.mode` 三态——"always"(默认,任意退出重启)/"unexpected"(退出码在 `expected_exit_codes` 内 → Stopped 不重启,子进程 fork 后自退出完成升级的场景;被信号杀死记 -1 哨兵,需显式配 -1 覆盖)/"never";`auto_restart=false` 一律按 Never 生效。model/config/config_edit/proc/桌面 ServiceForm/example 全链路 + e2e 4 项(unexpected 预期退出不重启/意外退出仍重启/always 回归/never 等价),测试总数 92→96(95 通过 + 1 ignored;此前文档记 90 系少计 2,本次审计核准)+ clippy/fmt clean;README 快速开始与 DESIGN §5 已随代码同步。代码见 21ad3ec;本条与当日 CI 修复(d36d65e,固定 pnpm@8.14.0)为文档规范审计后补记。
 - **2026-08-21(文档规范审计修复)**:全面核对 9 份文档与代码的一致性,修复——① CLAUDE.md「stop 只杀直接子进程/孙子孤儿」已知局限已过时(Job Object 杀树 08-14 已完成),改为进程树语义描述;CLAUDE.md 模块表补 `service/`/`tui/`/health/signal/routes_ui,修正「子命令占位」「单 crate」「Phase 4 rust-embed」等滞后描述。② DESIGN §6 stop 描述与 §8 对齐(优雅停止现状);§3 技术栈表补 8 个已引入依赖;§4 目录树更新为 workspace 现状;§5.2/§6 `ProcRuntime`+`RwLock` 更正为 `ProcHandle`+`Mutex<ProcInner>`(model.rs 头注释同步);§12 单 crate 决策更新。③ ROADMAP 补 21ad3ec 变更日志、测试数核准(95 通过 + 1 ignored,共 96)。④ README 文档索引补 PLAN-GROUP-PRIORITY-PORTS.md、测试数更正。⑤ PLAN-DESKTOP 状态改「P1 已完成」、配置查找链补 08-18 的 `<cwd>/warden/config/` 级与 cwd 锚定说明。纯文档 + 1 行注释改动,测试 95 通过 + 1 ignored、fmt/clippy clean 复核。
+- **2026-08-24(RestartPolicy 支持部分覆盖 ✅)**:自升级 e2e 实测暴露——example 注释推荐的 dotted-key 写法(`restart.mode = "unexpected"` 单独两行)解析失败 `missing field max_retries`,5 个退避字段无 serde(default),用户必须写全 7 字段 inline table。修复:5 字段补 `#[serde(default = ...)]`(与 `Default` impl 同值 3/1000/60000/2.0/60),RestartPolicy derive 加 PartialEq(测试断言用);dotted-key 部分覆盖/空表/混合写法均可解析,未写字段取默认。回归测试 `restart_policy_partial_override_parses`(3 场景);真实 exe 实跑验证 dotted-key 配置启动且 API 透出 restart_mode=unexpected 正确。测试 95→96 全绿 + clippy/fmt clean。背景:配合 rs-selfupdater/go-selfupdater 子进程自升级场景(两库已修复 Windows 交班时序,e2e 详见各仓库)。
