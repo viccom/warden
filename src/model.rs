@@ -69,17 +69,26 @@ fn default_graceful_timeout_secs() -> u64 {
 }
 
 /// 崩溃重启的退避策略。
-#[derive(Deserialize, Serialize, Clone, Debug)]
+///
+/// 所有字段均可缺省(serde default 与 `Default` impl 对齐)——支持 example
+/// 推荐的 dotted-key 部分覆盖写法(如单写 `restart.mode = "unexpected"`),
+/// 未写字段取默认值,不必写全 7 字段 inline table。
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct RestartPolicy {
     /// 重启窗口内最大重试次数,超过则进入 Failed。
+    #[serde(default = "default_max_retries")]
     pub max_retries: u32,
     /// 首次退避毫秒。
+    #[serde(default = "default_backoff_initial_ms")]
     pub backoff_initial_ms: u64,
     /// 退避上限毫秒。
+    #[serde(default = "default_backoff_max_ms")]
     pub backoff_max_ms: u64,
     /// 退避乘数(指数增长)。
+    #[serde(default = "default_backoff_factor")]
     pub backoff_factor: f64,
     /// 重试计数重置窗口秒;距上次启动超过该值则重置计数。
+    #[serde(default = "default_restart_window_secs")]
     pub restart_window_secs: u64,
     /// 退出行为模式(默认 Always 完全向后兼容)。
     ///
@@ -105,6 +114,28 @@ pub struct RestartPolicy {
 
 fn default_expected_exit_codes() -> Vec<i32> {
     vec![0]
+}
+
+// serde default 与 `RestartPolicy::default()` 保持同值;拆成独立函数
+// 供 `#[serde(default = ...)]` 引用(serde 不支持直接调用 Default::default)。
+fn default_max_retries() -> u32 {
+    3
+}
+
+fn default_backoff_initial_ms() -> u64 {
+    1000
+}
+
+fn default_backoff_max_ms() -> u64 {
+    60_000
+}
+
+fn default_backoff_factor() -> f64 {
+    2.0
+}
+
+fn default_restart_window_secs() -> u64 {
+    60
 }
 
 /// 退出行为模式(对齐 supervisord `autorestart=unexpected` 语义)。
@@ -315,5 +346,32 @@ mod tests {
                 "变体 {m:?} 序列化期望 {want},实际:{s}"
             );
         }
+    }
+
+    /// 意图:dotted-key 部分覆盖 restart 表(如 example 推荐的
+    /// `restart.mode = "unexpected"` 单行写法)必须可解析,未写字段取默认值。
+    /// 回归:5 个退避字段曾无 serde(default),导致该写法报
+    /// `missing field max_retries` —— example 注释照抄即失败。
+    #[test]
+    fn restart_policy_partial_override_parses() {
+        // 只写 mode(dotted-key 单字段)
+        let p: RestartPolicy = toml::from_str(r#"mode = "unexpected""#).unwrap();
+        assert_eq!(p.mode, RestartMode::Unexpected);
+        assert_eq!(p.max_retries, RestartPolicy::default().max_retries);
+        assert_eq!(p.backoff_initial_ms, 1000);
+        assert_eq!(p.backoff_max_ms, 60_000);
+        assert_eq!(p.backoff_factor, 2.0);
+        assert_eq!(p.restart_window_secs, 60);
+        assert_eq!(p.expected_exit_codes, vec![0]);
+
+        // 只覆盖部分退避字段,其余取默认
+        let p: RestartPolicy = toml::from_str("max_retries = 5").unwrap();
+        assert_eq!(p.max_retries, 5);
+        assert_eq!(p.mode, RestartMode::Always);
+        assert_eq!(p.backoff_factor, 2.0);
+
+        // 空表 = 全默认
+        let p: RestartPolicy = toml::from_str("").unwrap();
+        assert_eq!(p, RestartPolicy::default());
     }
 }
