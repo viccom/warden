@@ -1,6 +1,6 @@
 [package]
 name = "warden-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "warden 桌面版(多节点进程监护管理)"
 authors = ["viccom"]
 edition = "2021"

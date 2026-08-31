@@ -1,9 +1,9 @@
 name: Release
 
-# 推送 v* 标签触发:双平台构建 → 自动创建 GitHub Release 并附带产物
+# 推送 v* 或纯数字版本标签(如 0.2.0)触发:双平台构建 → 自动创建 GitHub Release 并附带产物
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*", "[0-9]+.*"]
 
 permissions:
   contents: write
