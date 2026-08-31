@@ -3,7 +3,8 @@
 //! - **Windows**:`CREATE_NEW_PROCESS_GROUP` 启动(继承 console + 独立 pgid)
 //!   + Job Object(`KILL_ON_JOB_CLOSE` 杀整棵树 + warden 崩溃保护)
 //!   + `GenerateConsoleCtrlEvent(CTRL_C_EVENT)` 优雅停止(触发子进程 tokio ctrl_c)
-//! - **Unix**:`process_group(0)` 让子进程自成新进程组 + `killpg` SIGTERM/SIGKILL
+//! - **Unix**:`process_group(0)` 让子进程自成新进程组 + `killpg` SIGTERM/SIGKILL;
+//!   `PR_SET_PDEATHSIG` 保证 warden 暴毙时内核连带 SIGKILL 子进程(对齐 Job Object 清树)
 
 use std::io;
 
@@ -27,6 +28,23 @@ pub fn prepare_command(cmd: &mut Command) {
     #[cfg(unix)]
     {
         cmd.process_group(0);
+        // 对齐 Windows Job Object KILL_ON_JOB_CLOSE:warden 死亡(含 SIGKILL 暴毙)时,
+        // 内核对子进程直接发 SIGKILL,避免孤儿残留。
+        // prctl 存在竞态窗口(父进程在 fork 后、prctl 前死亡则收不到信号),getppid 自检兜底。
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // prctl 已装好但父进程在此之前已退 → 已成孤儿(ppid=1),主动失败让 spawn 层感知
+                if libc::getppid() == 1 {
+                    return Err(std::io::Error::other(
+                        "parent exited before PDEATHSIG armed",
+                    ));
+                }
+                Ok(())
+            });
+        }
     }
 }
 
