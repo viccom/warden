@@ -1,4 +1,5 @@
-//! 优雅停止端到端测试:验证 CTRL_C_EVENT 触发 graceful、超时强杀、Job Object 杀树。
+//! 优雅停止端到端测试:验证优雅停止信号(Windows CTRL_BREAK / Unix SIGTERM)触发 graceful、
+//! 超时强杀、进程树击杀(Windows Job Object / Unix killpg)。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -104,7 +105,7 @@ async fn graceful_stop_sends_ctrl_c_and_target_exits_cleanly() {
 
     assert!(
         marker.exists(),
-        "helper 应收到 CTRL_C_EVENT 写标记后 graceful 退出(证明信号链路通)"
+        "helper 应收到优雅停止信号写标记后 graceful 退出(证明信号链路通)"
     );
     let _ = std::fs::remove_file(&marker);
 }
@@ -174,7 +175,7 @@ async fn force_kill_terminates_process_tree() {
     wait_state(&sv, "t", "stopped", Duration::from_secs(5)).await;
 
     // stubborn helper 收到信号写了标记(但没退出,被 force_kill)
-    assert!(marker.exists(), "stubborn helper 应收到 CTRL_C_EVENT");
+    assert!(marker.exists(), "stubborn helper 应收到优雅停止信号");
     let _ = std::fs::remove_file(&marker);
     // 注:孙进程(ping)被 Job Object 一并 TerminateJobObject 杀掉;
     //   精确进程检查较脆(系统可能有其他 ping),这里以 helper 端 force_kill 验证为主。

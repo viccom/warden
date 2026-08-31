@@ -12,7 +12,14 @@ pub fn long_runner() -> (String, Vec<String>) {
             vec!["-n".into(), "60".into(), "127.0.0.1".into()],
         )
     } else {
-        ("sleep".into(), vec!["60".into()])
+        // 纯 sleep 全程静默 → SSE/log 捕获类用例拿不到子进程 stdout;改为每秒 echo 一行
+        (
+            "sh".into(),
+            vec![
+                "-c".into(),
+                "i=0; while [ $i -lt 60 ]; do echo tick-$i; i=$((i+1)); sleep 1; done".into(),
+            ],
+        )
     }
 }
 

@@ -69,6 +69,8 @@ async fn main() -> anyhow::Result<()> {
             {
                 anyhow::bail!("`warden service` 仅 Windows 支持");
             }
+            // Unix 分支 bail! 永不返回 → Ok(()) 仅在 Windows 可达(两平台 clippy -D warnings 都要过)
+            #[allow(unreachable_code)]
             Ok(())
         }
     }

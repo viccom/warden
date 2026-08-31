@@ -165,7 +165,7 @@ mod tests {
         let snap = h.snapshot(usize::MAX);
         assert_eq!(snap.len(), HISTORY_CAPACITY);
         // 最早的 100 行被弹出
-        assert_eq!(snap[0].text, format!("x100"));
+        assert_eq!(snap[0].text, "x100");
     }
 
     #[test]

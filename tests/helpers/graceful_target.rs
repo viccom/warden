@@ -1,7 +1,8 @@
 //! 测试辅助程序(由 warden 作为被监护进程启动),验证优雅停止信号链路。
 //!
 //! 用法:`graceful_target <marker_path> [--stubborn] [--child]`
-//! - 收到 console 信号(CTRL_C / CTRL_BREAK)后写标记文件(证明信号投递成功)
+//! - 收到停止信号(Windows console CTRL_C/CTRL_BREAK;Unix SIGTERM——与 warden 生产信号路径一致)
+//!   后写标记文件(证明信号投递成功)
 //! - 默认收到即 exit 0(graceful)
 //! - `--stubborn`:收到后继续运行,等 warden 超时强杀(测 force_kill)
 //! - `--child`:额外 spawn 一个长期子进程(测 Job Object 杀整棵进程树)
@@ -61,7 +62,14 @@ async fn main() {
     }
     #[cfg(not(windows))]
     {
-        let _ = tokio::signal::ctrl_c().await;
+        // warden stop 在 Unix 对进程组发 SIGTERM(见 signal.rs unix_imp),须监听它而非 ctrl_c
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("安装 SIGTERM 监听");
+        // handler 就绪标记:对齐 Windows 分支,测试等它落盘后再发停止信号,消除竞态
+        if !marker.is_empty() {
+            let _ = std::fs::write(format!("{marker}.ready"), "");
+        }
+        term.recv().await;
     }
 
     // 收到信号:写标记
