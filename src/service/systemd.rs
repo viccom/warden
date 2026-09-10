@@ -1,7 +1,8 @@
 //! Linux systemd unit 生成。
 //!
 //! Linux 不用单独 `service` 子命令:systemd 直接 SIGTERM 到 `run`,warden 的
-//! `run_app` 监听 ctrl_c(SIGINT)——TODO: 补 SIGTERM 监听(systemd stop 发 SIGTERM)。
+//! `run_app` 并行监听 ctrl_c(SIGINT)与 SIGTERM(见 lib.rs,tests/sigterm_e2e.rs),
+//! stop 走完整优雅停机链(停止被监护服务 + drain HTTP)。
 
 const UNIT_PATH: &str = "/etc/systemd/system/warden.service";
 

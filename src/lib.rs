@@ -53,10 +53,22 @@ pub async fn run_app(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     }
     #[cfg(not(windows))]
     {
+        let tx_int = shutdown_tx.clone();
         tokio::spawn(async move {
             let _ = tokio::signal::ctrl_c().await;
             tracing::info!("[warden] Ctrl-C 收到,触发 shutdown");
-            shutdown_tx.cancel();
+            tx_int.cancel();
+        });
+        // systemd stop / kill 发 SIGTERM:Unix 默认行为是立即终止进程——
+        // 不显式监听会绕过优雅停机链(在途 HTTP 请求断开、被监护子进程只能靠
+        // PDEATHSIG 被 SIGKILL 连带死)。与 ctrl_c 并行等价监听。
+        let tx_term = shutdown_tx;
+        tokio::spawn(async move {
+            let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("安装 SIGTERM 监听失败");
+            sig.recv().await;
+            tracing::info!("[warden] SIGTERM 收到,触发 shutdown");
+            tx_term.cancel();
         });
     }
     run_app_with_shutdown(cfg, config_path, shutdown).await
