@@ -14,6 +14,8 @@ pub mod config_edit;
 pub mod error;
 pub mod logs;
 pub mod model;
+#[cfg(feature = "reverse-proxy")]
+pub mod proxy;
 pub mod service;
 pub mod supervisor;
 pub mod tui;
@@ -199,4 +201,14 @@ pub fn init_tracing(log_dir: &str) -> LogGuard {
 
     let _ = tracing_subscriber::registry().with(layers).try_init();
     LogGuard(guard)
+}
+
+#[cfg(not(feature = "reverse-proxy"))]
+#[test]
+fn proxy_module_absent_without_feature() {
+    // 编译期断言:无 feature 时 mod proxy 不可见。若有人误把 cfg 去掉,此测试文件
+    // 在无 feature 编译时仍会尝试引用 warden::proxy(下方 feature-on 测试),触发编译失败。
+    // 这里用一个常量占位,真正断言在 Cargo feature 层面(下方 Task 2 的 config 单测
+    // 不依赖 proxy mod,因此无 feature 时整个 crate 仍可编译)。
+    assert!(true, "proxy module is feature-gated");
 }

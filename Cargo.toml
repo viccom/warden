@@ -47,6 +47,10 @@ path = "tests/helpers/port_listener_target.rs"
 name = "keys_probe"
 path = "tests/helpers/keys_probe.rs"
 
+[features]
+default = ["reverse-proxy"]
+reverse-proxy = []  # P0 空依赖;P1 起加 dep:hyper 等
+
 [dependencies]
 # 与 rs-iot 同版本栈,便于统一维护
 tokio = { version = "1", features = ["full"] }
