@@ -329,6 +329,23 @@ impl Supervisor {
             loop {
                 tokio::time::sleep(interval).await;
                 metrics::refresh(&mut sys);
+                // 先采样 CPU/内存:本 task 主职责不等待端口采集——实测 netstat2
+                // 全表采集可达数百 ms,若排在其后,metrics 新鲜度会被 netlink
+                // 耗时拖累(e2e 曾因此在慢机上 800ms 内采不到样而稳定失败)
+                for entry in self.handles.iter() {
+                    let pid = {
+                        let g = entry.inner.lock().unwrap();
+                        match &g.state {
+                            ProcState::Running { pid, .. } => Some(*pid),
+                            _ => None,
+                        }
+                    };
+                    if let Some(pid) = pid {
+                        if let Some(m) = metrics::sample_one(&sys, pid) {
+                            entry.inner.lock().unwrap().metrics = m;
+                        }
+                    }
+                }
                 let index = ports::children_index(&sys);
                 // 全表 socket 采集一次供全部服务共享;阻塞 OS 调用放 spawn_blocking
                 let rows = match tokio::task::spawn_blocking(ports::collect_rows).await {
@@ -351,12 +368,8 @@ impl Supervisor {
                         }
                     };
                     if let Some(pid) = pid {
-                        let mut g = entry.inner.lock().unwrap();
-                        if let Some(m) = metrics::sample_one(&sys, pid) {
-                            g.metrics = m;
-                        }
                         let set = ports::subtree_from(&index, pid);
-                        g.ports = ports::filter_listening(&rows, &set);
+                        entry.inner.lock().unwrap().ports = ports::filter_listening(&rows, &set);
                     }
                 }
             }
