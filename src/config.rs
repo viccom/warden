@@ -147,12 +147,19 @@ pub struct ProxyRoute {
     pub preserve_host: Option<bool>,
 }
 
-/// 规范化 [proxy] 段:domain 与路由 host 小写化存储(匹配层统一小写比较,幂等)。
+/// 规范化 [proxy] 段:domain 与路由 host 小写化存储(匹配层统一小写比较,幂等);
+/// 服务的 subdomain 同步小写化(校验按小写判断,存储须对齐——引擎把请求 Host
+/// 小写后与标签比对,原样存大写会静默 miss)。
 pub fn normalize_config(mut cfg: Config) -> Config {
     if let Some(p) = &mut cfg.proxy {
         p.domain = p.domain.take().map(|d| d.to_lowercase());
         for r in &mut p.routes {
             r.host = r.host.to_lowercase();
+        }
+    }
+    for svc in &mut cfg.services {
+        if let Some(sd) = &mut svc.subdomain {
+            *sd = sd.to_lowercase();
         }
     }
     cfg
@@ -175,10 +182,26 @@ pub fn validate_config_with_services(cfg: &Config, service_names: &[&str]) -> Ve
     if bind_empty(&p.http_bind) && bind_empty(&p.https_bind) {
         warns.push("[proxy] http_bind 与 https_bind 均为空,反代无监听地址".into());
     }
+    if let Some(d) = p.domain.as_deref() {
+        if d.is_empty() || d.contains(['/', '\\', ':', '*']) {
+            warns.push(format!(
+                "[proxy] domain '{d}' 非法(须为纯域名,无 path/端口/通配符;auto 路由整体不可用)"
+            ));
+        }
+    }
     let mut seen = HashSet::new();
     for r in &p.routes {
-        if r.host.contains('/') || r.host.contains('\\') {
+        if r.host.is_empty() {
+            warns.push("路由 host 为空(须为域名或 '*.' 通配)".into());
+        } else if r.host.contains('/') || r.host.contains('\\') {
             warns.push(format!("路由 '{}':host 禁 path 部分", r.host));
+        } else if r.host.contains(':') {
+            warns.push(format!(
+                "路由 '{}':host 禁端口(请求 Host 匹配前已剥端口,带端口的 host 永不命中)",
+                r.host
+            ));
+        } else if r.host.contains('*') && !r.host.starts_with("*.") {
+            warns.push(format!("路由 '{}':通配仅支持 '*.' 前缀形态(单层)", r.host));
         }
         // to / service 二选一且必填其一
         match (&r.to, &r.service) {
@@ -914,5 +937,66 @@ subdomain = "FS2"
         let r = Config::parse(toml).unwrap();
         let errs = validate_config(&r);
         assert!(!errs.iter().any(|e| e.contains("[a-z0-9]+")));
+    }
+
+    /// 意图:subdomain 小写化存储(校验层按小写判断,存储层须对齐)——
+    /// P1 引擎把请求 Host 小写化后与标签比对,原样存大写会静默 miss → 421。
+    #[test]
+    fn normalize_lowercases_subdomain_storage() {
+        let toml = r#"
+[[service]]
+name = "fs"
+command = "/bin/true"
+proxy = true
+subdomain = "FS2"
+"#;
+        let cfg = Config::parse(toml).unwrap();
+        assert_eq!(
+            cfg.services[0].subdomain.as_deref(),
+            Some("fs2"),
+            "subdomain 须小写化存储"
+        );
+    }
+
+    /// 意图:格式非法的 host(空串/裸 */含端口)永不匹配任何请求 Host
+    /// (§4.3 小写+剥端口后比对),必须 warn 给用户反馈,不留静默脏路由。
+    #[test]
+    fn validate_proxy_warns_malformed_hosts() {
+        let base = "[proxy]\ndomain = \"x.example.com\"\nhttp_bind = \"0.0.0.0:8080\"\n";
+        for (host, expect) in [
+            ("", "host 为空"),
+            ("*", "'*.' 前缀"),
+            ("a*.x.example.com", "'*.' 前缀"),
+            ("a.x.example.com:8080", "禁端口"),
+        ] {
+            let toml = format!("{base}[[proxy.route]]\nhost = \"{host}\"\nto = \"http://1\"\n");
+            let r = Config::parse(&toml).unwrap();
+            let errs = validate_config(&r);
+            assert!(
+                errs.iter().any(|e| e.contains(expect)),
+                "host '{host}' 应产生含 '{expect}' 的告警,实际:{errs:?}"
+            );
+        }
+    }
+
+    /// 意图:domain 空串/含 path/端口/通配符时 auto 路由整体不可用或产生
+    /// 怪异剥后缀匹配,必须 warn。
+    #[test]
+    fn validate_proxy_warns_invalid_domain() {
+        for domain in [
+            "",
+            "x.example.com:443",
+            "a/b.example.com",
+            "*.x.example.com",
+        ] {
+            let toml = format!("[proxy]\ndomain = \"{domain}\"\nhttp_bind = \"0.0.0.0:8080\"\n");
+            let r = Config::parse(&toml).unwrap();
+            let errs = validate_config(&r);
+            assert!(
+                errs.iter()
+                    .any(|e| e.contains("domain") && e.contains("非法")),
+                "domain '{domain}' 应告警非法,实际:{errs:?}"
+            );
+        }
     }
 }
