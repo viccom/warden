@@ -41,6 +41,7 @@ fn app_with(services: Vec<ServiceConfig>, token: Option<&str>) -> (axum::Router,
     let mut cfg = Config {
         services,
         daemon: Default::default(),
+        proxy: None,
     };
     if let Some(t) = token {
         cfg.daemon.auth_token = t.into();
@@ -99,6 +100,7 @@ async fn health_exposes_daemon_title() {
     let mut cfg = Config {
         services: vec![],
         daemon: Default::default(),
+        proxy: None,
     };
     cfg.daemon.title = Some("rs-iot 现场监护".into());
     let state = build_state(cfg, None);

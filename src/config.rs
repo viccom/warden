@@ -21,6 +21,10 @@ pub struct Config {
     pub daemon: DaemonConfig,
     #[serde(default, rename = "service")]
     pub services: Vec<ServiceConfig>,
+    /// 反向代理段(存在 = 启用;feature 未编译时仅启动 warn 并忽略)。
+    /// 无条件解析(D8:配置层无 cfg 分叉,双 feature 形态解析行为一致)。
+    #[serde(default)]
+    pub proxy: Option<ProxyConfig>,
 }
 
 /// daemon 自身配置。
@@ -98,6 +102,138 @@ impl Default for DaemonConfig {
     }
 }
 
+// ── 反向代理配置([proxy] 段,无条件解析;引擎在 reverse-proxy feature 下)──
+
+/// 反向代理全局配置。设计见 docs/PLAN-REVERSE-PROXY.md §4.1。
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct ProxyConfig {
+    /// 根级域名:auto 路由 = <subdomain>.<domain>。
+    #[serde(default)]
+    pub domain: Option<String>,
+    /// HTTP 监听地址;缺省/空 = 不监听。
+    #[serde(default)]
+    pub http_bind: Option<String>,
+    /// HTTPS 监听地址(P2 起;P0/P1 解析但不消费)。
+    #[serde(default)]
+    pub https_bind: Option<String>,
+    /// 上游连接超时(仅约束连接建立,不约束请求/响应全程——SSE/大文件不应被误杀)。
+    #[serde(default = "default_proxy_connect_timeout_ms")]
+    pub connect_timeout_ms: u64,
+    /// 全局缺省:转发时 Host 重写为上游;true = 保留客户端 Host。
+    #[serde(default)]
+    pub preserve_host: bool,
+    /// 显式路由表(与 auto 并存时显式优先)。
+    #[serde(default, rename = "route")]
+    pub routes: Vec<ProxyRoute>,
+}
+
+fn default_proxy_connect_timeout_ms() -> u64 {
+    5000
+}
+
+/// 单条显式路由:精确 host 或 `*.` 单层通配;`to`/`service` 二选一。
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct ProxyRoute {
+    /// 精确 host(如 `fs2.opc.dongx.site`)或单层通配(`*.opc.dongx.site`)。
+    pub host: String,
+    /// 显式上游(http/https URI)。
+    #[serde(default)]
+    pub to: Option<String>,
+    /// 引用被监护服务名(上游 = 该服务 ui_url,请求时经 snapshot 解析)。
+    #[serde(default)]
+    pub service: Option<String>,
+    /// 路由级 Host 保留覆盖(None = 用全局 preserve_host)。
+    #[serde(default)]
+    pub preserve_host: Option<bool>,
+}
+
+/// 规范化 [proxy] 段:domain 与路由 host 小写化存储(匹配层统一小写比较,幂等)。
+pub fn normalize_config(mut cfg: Config) -> Config {
+    if let Some(p) = &mut cfg.proxy {
+        p.domain = p.domain.take().map(|d| d.to_lowercase());
+        for r in &mut p.routes {
+            r.host = r.host.to_lowercase();
+        }
+    }
+    cfg
+}
+
+/// 校验 [proxy] 段(服务引用按 cfg 自身服务名表)。
+pub fn validate_config(cfg: &Config) -> Vec<String> {
+    let names: Vec<&str> = cfg.services.iter().map(|s| s.name.as_str()).collect();
+    validate_config_with_services(cfg, &names)
+}
+
+/// 校验 [proxy] 段(纯函数,坏项 warn 不致命——返回告警文案供调用方记日志,
+/// 路由保留不剔除,引擎侧自行容忍)。校验清单见设计 §4.1。
+pub fn validate_config_with_services(cfg: &Config, service_names: &[&str]) -> Vec<String> {
+    let Some(p) = &cfg.proxy else {
+        return Vec::new();
+    };
+    let mut warns = Vec::new();
+    let bind_empty = |b: &Option<String>| b.as_deref().map_or(true, |s| s.is_empty());
+    if bind_empty(&p.http_bind) && bind_empty(&p.https_bind) {
+        warns.push("[proxy] http_bind 与 https_bind 均为空,反代无监听地址".into());
+    }
+    let mut seen = HashSet::new();
+    for r in &p.routes {
+        if r.host.contains('/') || r.host.contains('\\') {
+            warns.push(format!("路由 '{}':host 禁 path 部分", r.host));
+        }
+        // to / service 二选一且必填其一
+        match (&r.to, &r.service) {
+            (Some(_), Some(_)) => {
+                warns.push(format!("路由 '{}':to 与 service 二选一(同时配置)", r.host));
+            }
+            (None, None) => {
+                warns.push(format!("路由 '{}':to 与 service 二选一(均未配置)", r.host));
+            }
+            _ => {}
+        }
+        if let Some(to) = &r.to {
+            if !valid_upstream_uri(to) {
+                warns.push(format!(
+                    "路由 '{}':to 必须是合法的 http/https URI:{to}",
+                    r.host
+                ));
+            }
+        }
+        // 通配仅允许前缀 `*.` 且只匹配单层子域:单根域 + 单张通配证书模型(D9/D10)
+        // 下,配置层只认 `*.<domain>`;引擎匹配更通用(最长后缀),不在此限制
+        if let Some(suffix) = r.host.strip_prefix("*.") {
+            match &p.domain {
+                Some(d) if suffix == d => {}
+                Some(d) => warns.push(format!(
+                    "路由 '{}':通配仅支持单层子域 '*.{d}'(与 [proxy] domain 对齐)",
+                    r.host
+                )),
+                None => warns.push(format!("路由 '{}':通配路由需要 [proxy] domain", r.host)),
+            }
+        }
+        if let Some(svc) = &r.service {
+            if !service_names.contains(&svc.as_str()) {
+                warns.push(format!("路由 '{}' 引用的服务 '{svc}' 不存在", r.host));
+            }
+        }
+        if !seen.insert(r.host.clone()) {
+            warns.push(format!("路由 host '{}' 重复", r.host));
+        }
+    }
+    warns
+}
+
+/// 上游 URI 粗校验:必须 http/https 绝对地址且 authority 非空(warn 级,
+/// 转发层在 P1 会再按 URI 正式解析)。
+fn valid_upstream_uri(s: &str) -> bool {
+    match s
+        .strip_prefix("http://")
+        .or_else(|| s.strip_prefix("https://"))
+    {
+        Some(auth) => !auth.is_empty() && !auth.contains(' ') && !auth.starts_with('/'),
+        None => false,
+    }
+}
+
 /// 服务名禁用字符(文件系统 / 路径 / Windows 服务名不安全)。
 const NAME_FORBIDDEN: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
 
@@ -131,14 +267,14 @@ pub fn validate_service(svc: &ServiceConfig, seen: &mut HashSet<String>) -> Resu
 }
 
 impl Config {
-    /// 解析 toml 字符串 + 校验(坏项跳过并 warn,不致命)。
+    /// 解析 toml 字符串 + 规范化 + 校验(坏项跳过并 warn,不致命)。
     pub fn parse(s: &str) -> Result<Self, WardenError> {
-        let mut cfg: Config = toml::from_str(s)?;
+        let mut cfg: Config = normalize_config(toml::from_str(s)?);
         cfg.validate();
         Ok(cfg)
     }
 
-    /// 校验:剔除坏服务项(warn),保留有效项。
+    /// 校验:剔除坏服务项(warn),保留有效项;[proxy] 坏项 warn 但保留。
     fn validate(&mut self) {
         let mut seen = HashSet::new();
         let original = std::mem::take(&mut self.services);
@@ -147,6 +283,9 @@ impl Config {
                 Ok(()) => self.services.push(svc),
                 Err(e) => tracing::warn!("[config] 跳过无效服务项:{e}"),
             }
+        }
+        for e in validate_config(self) {
+            tracing::warn!("[config] [proxy] {e}");
         }
     }
 
@@ -554,5 +693,140 @@ group = "web"
         let cfg = Config::parse(toml).unwrap();
         assert_eq!(cfg.services.len(), 1, "含 '/' 的组名应整项跳过");
         assert_eq!(cfg.services[0].name, "b");
+    }
+
+    #[test]
+    fn parse_proxy_section() {
+        let toml = r#"
+[proxy]
+domain = "opc.dongx.site"
+http_bind = "0.0.0.0:8080"
+connect_timeout_ms = 3000
+preserve_host = true
+
+[[proxy.route]]
+host = "fs2.opc.dongx.site"
+to = "http://127.0.0.1:9000"
+"#;
+        let cfg = Config::parse(toml).unwrap();
+        let p = cfg.proxy.expect("proxy 段存在");
+        assert_eq!(p.domain.as_deref(), Some("opc.dongx.site"));
+        assert_eq!(p.http_bind.as_deref(), Some("0.0.0.0:8080"));
+        assert_eq!(p.https_bind, None);
+        assert_eq!(p.connect_timeout_ms, 3000);
+        assert!(p.preserve_host);
+        assert_eq!(p.routes.len(), 1);
+        let r = &p.routes[0];
+        assert_eq!(r.host, "fs2.opc.dongx.site");
+        assert_eq!(r.to.as_deref(), Some("http://127.0.0.1:9000"));
+        assert_eq!(r.service, None);
+        assert!(!r.preserve_host.unwrap_or(false));
+    }
+
+    #[test]
+    fn default_proxy_absent() {
+        let cfg = Config::parse("[daemon]\napi_bind = \"127.0.0.1:8789\"\n").unwrap();
+        assert!(cfg.proxy.is_none(), "无 [proxy] 段 → None");
+    }
+
+    #[test]
+    fn proxy_defaults_when_partial() {
+        let toml = "[proxy]\ndomain = \"x.example.com\"\n";
+        let cfg = Config::parse(toml).unwrap();
+        let p = cfg.proxy.unwrap();
+        assert_eq!(p.connect_timeout_ms, 5000, "缺省 5000");
+        assert!(!p.preserve_host, "缺省 false");
+        assert!(p.http_bind.is_none() && p.https_bind.is_none());
+    }
+
+    #[test]
+    fn validate_proxy_rejects_to_and_service_both() {
+        let toml = r#"
+[proxy]
+domain = "x.example.com"
+http_bind = "0.0.0.0:8080"
+[[proxy.route]]
+host = "a.x.example.com"
+to = "http://1"
+service = "svc"
+"#;
+        let r = Config::parse(toml).unwrap();
+        let errs = validate_config(&r);
+        assert!(errs
+            .iter()
+            .any(|e| e.contains("to 与 service") && e.contains("二选一")));
+    }
+
+    #[test]
+    fn validate_proxy_normalizes_host_lowercase() {
+        let toml = r#"
+[proxy]
+domain = "x.example.com"
+http_bind = "0.0.0.0:8080"
+[[proxy.route]]
+host = "A.X.Example.COM"
+to = "http://1"
+"#;
+        let cfg = Config::parse(toml).unwrap();
+        let cfg = normalize_config(cfg);
+        assert_eq!(cfg.proxy.unwrap().routes[0].host, "a.x.example.com");
+    }
+
+    #[test]
+    fn validate_proxy_rejects_wildcard_multilevel() {
+        let toml = r#"
+[proxy]
+domain = "x.example.com"
+http_bind = "0.0.0.0:8080"
+[[proxy.route]]
+host = "*.b.x.example.com"
+to = "http://1"
+"#;
+        let r = Config::parse(toml).unwrap();
+        let errs = validate_config(&r);
+        assert!(errs.iter().any(|e| e.contains("仅支持单层")));
+    }
+
+    #[test]
+    fn validate_proxy_rejects_duplicate_host() {
+        let toml = r#"
+[proxy]
+domain = "x.example.com"
+http_bind = "0.0.0.0:8080"
+[[proxy.route]]
+host = "a.x.example.com"
+to = "http://1"
+[[proxy.route]]
+host = "a.x.example.com"
+to = "http://2"
+"#;
+        let r = Config::parse(toml).unwrap();
+        let errs = validate_config(&r);
+        assert!(errs.iter().any(|e| e.contains("重复")));
+    }
+
+    #[test]
+    fn validate_proxy_warns_when_both_binds_empty() {
+        let toml = "[proxy]\ndomain = \"x.example.com\"\n";
+        let r = Config::parse(toml).unwrap();
+        let errs = validate_config(&r);
+        assert!(errs.iter().any(|e| e.contains("无监听")));
+    }
+
+    #[test]
+    fn validate_proxy_warns_service_not_found() {
+        let toml = r#"
+[proxy]
+domain = "x.example.com"
+http_bind = "0.0.0.0:8080"
+[[proxy.route]]
+host = "a.x.example.com"
+service = "ghost"
+"#;
+        let r = Config::parse(toml).unwrap();
+        let errs = validate_config_with_services(&r, &["other"]);
+        assert!(errs
+            .iter()
+            .any(|e| e.contains("ghost") && e.contains("不存在")));
     }
 }
