@@ -33,6 +33,8 @@ fn stamp_svc(name: &str, priority: u32, stamp: &std::path::Path) -> ServiceConfi
         output_encoding: None,
         group: None,
         priority,
+        proxy: false,
+        subdomain: None,
     }
 }
 
@@ -56,6 +58,8 @@ fn fail_svc(name: &str, priority: u32) -> ServiceConfig {
         output_encoding: None,
         group: None,
         priority,
+        proxy: false,
+        subdomain: None,
     }
 }
 

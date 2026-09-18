@@ -34,6 +34,8 @@ fn service(name: &str, cmd: &str, args: Vec<String>) -> ServiceConfig {
         output_encoding: None,
         group: None,
         priority: 0,
+        proxy: false,
+        subdomain: None,
     }
 }
 

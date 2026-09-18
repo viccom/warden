@@ -219,6 +219,35 @@ pub fn validate_config_with_services(cfg: &Config, service_names: &[&str]) -> Ve
             warns.push(format!("路由 host '{}' 重复", r.host));
         }
     }
+    // auto 暴露的服务检查(domain 未配时 auto 整体不可用,不产生误导性告警)
+    if p.domain.is_some() {
+        for svc in &cfg.services {
+            if !svc.proxy {
+                continue;
+            }
+            if svc.ui_url.as_deref().map_or(true, |u| u.is_empty()) {
+                warns.push(format!(
+                    "服务 '{}':proxy = true 但未配置 ui_url,不进 auto 路由",
+                    svc.name
+                ));
+            }
+            let label = svc
+                .subdomain
+                .clone()
+                .unwrap_or_else(|| svc.name.clone())
+                .to_lowercase();
+            if label.is_empty()
+                || !label
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            {
+                warns.push(format!(
+                    "服务 '{}':auto 路由标签 '{label}' 不满足 [a-z0-9]+,不暴露",
+                    svc.name
+                ));
+            }
+        }
+    }
     warns
 }
 
@@ -828,5 +857,62 @@ service = "ghost"
         assert!(errs
             .iter()
             .any(|e| e.contains("ghost") && e.contains("不存在")));
+    }
+
+    #[test]
+    fn validate_proxy_warns_service_without_ui_url() {
+        let toml = r#"
+[proxy]
+domain = "x.example.com"
+http_bind = "0.0.0.0:8080"
+[[service]]
+name = "fs"
+command = "/bin/true"
+proxy = true
+"#;
+        let r = Config::parse(toml).unwrap();
+        let errs = validate_config(&r);
+        assert!(errs
+            .iter()
+            .any(|e| e.contains("fs") && e.contains("ui_url")));
+    }
+
+    #[test]
+    fn validate_proxy_warns_invalid_subdomain_label() {
+        let toml = r#"
+[proxy]
+domain = "x.example.com"
+http_bind = "0.0.0.0:8080"
+[[service]]
+name = "fs"
+command = "/bin/true"
+proxy = true
+ui_url = "http://127.0.0.1:8790"
+subdomain = "fs-2"
+"#;
+        let r = Config::parse(toml).unwrap();
+        let errs = validate_config(&r);
+        assert!(errs
+            .iter()
+            .any(|e| e.contains("fs-2") && e.contains("[a-z0-9]+")));
+    }
+
+    #[test]
+    fn validate_proxy_accepts_uppercase_subdomain_after_lowering() {
+        // 标签校验按小写化后判断:FS2 → fs2 合法,不告警
+        let toml = r#"
+[proxy]
+domain = "x.example.com"
+http_bind = "0.0.0.0:8080"
+[[service]]
+name = "fs"
+command = "/bin/true"
+proxy = true
+ui_url = "http://127.0.0.1:8790"
+subdomain = "FS2"
+"#;
+        let r = Config::parse(toml).unwrap();
+        let errs = validate_config(&r);
+        assert!(!errs.iter().any(|e| e.contains("[a-z0-9]+")));
     }
 }

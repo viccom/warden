@@ -525,6 +525,8 @@ mod tests {
             output_encoding: None,
             group: None,
             priority,
+            proxy: false,
+            subdomain: None,
         }
     }
 

@@ -62,6 +62,38 @@ pub struct ServiceConfig {
     /// 同值按 name 字典序。缺省 0。
     #[serde(default)]
     pub priority: u32,
+    /// 允许经反代域名暴露(默认 false):auto 路由 = <subdomain>.<[proxy] domain>。
+    #[serde(default)]
+    pub proxy: bool,
+    /// 下级域名标签(无需写完整域名);缺省 = name,小写化后须满足 [a-z0-9]+。
+    #[serde(default)]
+    pub subdomain: Option<String>,
+}
+
+impl Default for ServiceConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            display_name: String::new(),
+            description: String::new(),
+            command: String::new(),
+            args: Vec::new(),
+            working_dir: None,
+            environment: HashMap::new(),
+            auto_start: false,
+            auto_restart: false,
+            restart: RestartPolicy::default(),
+            health: None,
+            ui_url: None,
+            config_file: None,
+            graceful_timeout_secs: default_graceful_timeout_secs(),
+            output_encoding: None,
+            group: None,
+            priority: 0,
+            proxy: false,
+            subdomain: None,
+        }
+    }
 }
 
 fn default_graceful_timeout_secs() -> u64 {
@@ -373,5 +405,27 @@ mod tests {
         // 空表 = 全默认
         let p: RestartPolicy = toml::from_str("").unwrap();
         assert_eq!(p, RestartPolicy::default());
+    }
+
+    #[test]
+    fn proxy_subdomain_roundtrip() {
+        let svc = ServiceConfig {
+            name: "fs".into(),
+            command: "x".into(),
+            proxy: true,
+            subdomain: Some("fs2".into()),
+            ..Default::default()
+        };
+        let toml = toml::to_string(&svc).unwrap();
+        let back: ServiceConfig = toml::from_str(&toml).unwrap();
+        assert!(back.proxy, "proxy=true 保留");
+        assert_eq!(back.subdomain.as_deref(), Some("fs2"), "subdomain 保留");
+    }
+
+    #[test]
+    fn proxy_fields_default() {
+        let svc = ServiceConfig::default();
+        assert!(!svc.proxy, "proxy 默认 false");
+        assert!(svc.subdomain.is_none(), "subdomain 默认 None");
     }
 }

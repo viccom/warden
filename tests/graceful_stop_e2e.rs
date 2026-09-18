@@ -31,6 +31,8 @@ fn svc(name: &str, cmd: &str, args: Vec<String>, graceful_timeout: u64) -> Servi
         output_encoding: None,
         group: None,
         priority: 0,
+        proxy: false,
+        subdomain: None,
     }
 }
 

@@ -45,6 +45,8 @@ fn make_config(
         output_encoding: None,
         group: None,
         priority: 0,
+        proxy: false,
+        subdomain: None,
     }
 }
 
