@@ -119,6 +119,11 @@ pub async fn serve_with_shutdown(
     listener: TcpListener,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
+    // D8:feature 未编译时 [proxy] 配置仅告警并忽略(在 cfg 被 build_state 消费前检测)
+    #[cfg(not(feature = "reverse-proxy"))]
+    if should_warn_proxy_ignored(&cfg) {
+        tracing::warn!("[warden] reverse-proxy feature 未编译,配置中的 [proxy] 段将被忽略");
+    }
     let alert_webhook = cfg.daemon.alert_webhook.clone();
     let state = api::build_state(cfg, config_path);
     state.supervisor.start_auto().await;
@@ -210,4 +215,11 @@ fn proxy_module_absent_without_feature() {
     // 若有人误删 lib.rs 的 #[cfg(feature)],无 feature 形态将在编译 proxy 模块
     // (P1 起引用 hyper 等 optional 依赖)时失败。行为验证由 config 单测承担
     // (不依赖 proxy mod,双形态共用)。
+}
+
+/// feature 未编译时,判定 [proxy] 配置是否会因 feature 缺失而被忽略(D8)。
+/// serve_with_shutdown 启动时据此 warn;纯函数供 e2e 断言。
+#[cfg(not(feature = "reverse-proxy"))]
+pub fn should_warn_proxy_ignored(cfg: &config::Config) -> bool {
+    cfg.proxy.is_some()
 }
