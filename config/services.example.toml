@@ -20,6 +20,18 @@ log_dir       = "./logs"                  # warden 自身日志目录(按日滚�
 # 全局环境变量:注入所有被监护进程(service 同名 key 覆盖全局)
 # env = { RUST_LOG = "info", TZ = "Asia/Shanghai" }
 
+# ── 反向代理(reverse-proxy feature,默认编译进 release)─────────────────
+# 设计与决策见 docs/PLAN-REVERSE-PROXY.md。本段缺省 = 不启用反代。
+# [proxy]
+# domain    = "opc.dongx.site"              # 根级域名:auto 路由 = <subdomain>.<domain>
+# http_bind  = "0.0.0.0:8080"               # 生产目标 80;本机 80 被 OpenResty 占用 → 8080
+# # https_bind = "0.0.0.0:8443"            # P2 起;443 同被占用,实测 8443 空闲
+# # connect_timeout_ms = 5000              # 上游连接超时(缺省 5000;仅约束连接建立)
+# # preserve_host = false                 # 转发时 Host 重写为上游;true = 保留客户端 Host
+# [[proxy.route]]                          # 显式路由(可多条;与 auto 并存时显式优先)
+# host = "fs2.opc.dongx.site"               # 精确 host 或 *.单层通配(须为 *.<domain>)
+# to   = "http://127.0.0.1:9000"           # 显式上游;或 service = "rs-iot" 引用被监护服务
+
 # ── 1. rs-iot 主程序(全字段演示)──────────────────────────────
 # REST :8790 / lux :6390,工业 IoT 边缘网关核心。
 # priority:小者先启动、越后停止 → rs-iot(0)先于 reasonix(5)先于 gateway(10)。
@@ -48,6 +60,10 @@ ui_url       = "http://127.0.0.1:8790"   # 管理入口(可选;点亮 UI「打�
 config_file  = "rs-iot/config/config.toml" # 子进程配置文件(可选;点亮 UI「编辑」按钮)
 # output_encoding = "gbk"   # 子进程输出编码(gbk/cp936/utf-8;缺省 UTF-8,中文乱码时设 gbk)
 # environment = { RUST_LOG = "debug" }  # 本服务专属环境变量(覆盖 daemon env 同名项)
+# proxy = true                              # 允许经反代域名暴露(默认 false;需 [proxy] domain)
+# subdomain = "fs2"                         # 下级域名标签,约束 [a-z0-9]+;缺省 = name
+# ↑ auto 路由:rs-iot.opc.dongx.site → http://127.0.0.1:8790(本服务 ui_url),
+#   服务停止时反代返回 503(含状态),未配置 ui_url 则 502。
 
 # ── 2. Reasonix AI Agent(最小配置对照)───────────────────────
 # AI Agent 后端 :8787。work/ 为工作目录(单会话)。
