@@ -192,13 +192,16 @@ pub async fn proxy_handler(
     forward_to(&state, req, &client, &upstream, preserve_host, &log).await
 }
 
-/// WebSocket 升级检测:Upgrade 头为 websocket(大小写不敏感)且
-/// Connection 含 upgrade 令牌(RFC 6455 握手形态)。
+/// WebSocket 升级检测:Upgrade 头含 websocket 令牌(RFC 7230 允许逗号分隔
+/// 列多协议,逐 token 匹配)且 Connection 含 upgrade 令牌(RFC 6455 握手形态)。
 fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
     let up = headers
         .get("upgrade")
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+        .is_some_and(|v| {
+            v.split(',')
+                .any(|t| t.trim().eq_ignore_ascii_case("websocket"))
+        });
     let conn = headers
         .get("connection")
         .and_then(|v| v.to_str().ok())
@@ -575,6 +578,33 @@ mod tests {
         rewrite_headers(&mut h, "203.0.113.5", "upstream:8080", "https", false);
         assert_eq!(h.get("x-forwarded-proto").unwrap(), "https");
         assert_eq!(h.get("x-forwarded-host").unwrap(), "a.example.com");
+    }
+
+    /// 意图:RFC 7230 允许 Upgrade 头逗号分隔列多协议,websocket 不必是
+    /// 唯一值——全值相等比较会把合规握手误判为非 WS(剥头后上游 400)。
+    #[test]
+    fn websocket_upgrade_detects_multi_protocol_header() {
+        let mut h = HeaderMap::new();
+        h.insert("upgrade", "WebSocket, h2c".parse().unwrap());
+        h.insert("connection", "keep-alive, Upgrade".parse().unwrap());
+        assert!(
+            is_websocket_upgrade(&h),
+            "多协议 Upgrade 头应识别出 websocket"
+        );
+    }
+
+    /// 意图:非 websocket 升级(h2c)与缺 Connection 令牌的请求都不得进隧道。
+    #[test]
+    fn websocket_upgrade_rejects_non_ws_forms() {
+        let mut h = HeaderMap::new();
+        h.insert("upgrade", "h2c".parse().unwrap());
+        h.insert("connection", "Upgrade".parse().unwrap());
+        assert!(!is_websocket_upgrade(&h), "非 ws 协议不进隧道");
+
+        let mut h = HeaderMap::new();
+        h.insert("upgrade", "websocket".parse().unwrap());
+        h.insert("connection", "keep-alive".parse().unwrap());
+        assert!(!is_websocket_upgrade(&h), "无 upgrade 令牌不进隧道");
     }
 
     /// 意图:错误页插值(host/detail 来自客户端输入)必须 HTML 转义,

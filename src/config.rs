@@ -244,6 +244,7 @@ pub fn validate_config_with_services(cfg: &Config, service_names: &[&str]) -> Ve
     }
     // auto 暴露的服务检查(domain 未配时 auto 整体不可用,不产生误导性告警)
     if p.domain.is_some() {
+        let mut labels = HashSet::new();
         for svc in &cfg.services {
             if !svc.proxy {
                 continue;
@@ -266,6 +267,13 @@ pub fn validate_config_with_services(cfg: &Config, service_names: &[&str]) -> Ve
             {
                 warns.push(format!(
                     "服务 '{}':auto 路由标签 '{label}' 不满足 [a-z0-9]+,不暴露",
+                    svc.name
+                ));
+                continue; // 非法标签不暴露,不参与冲突检查
+            }
+            if !labels.insert(label.clone()) {
+                warns.push(format!(
+                    "服务 '{}':auto 路由标签 '{label}' 与其他服务冲突(同一子域命中非确定)",
                     svc.name
                 ));
             }
@@ -937,6 +945,45 @@ subdomain = "FS2"
         let r = Config::parse(toml).unwrap();
         let errs = validate_config(&r);
         assert!(!errs.iter().any(|e| e.contains("[a-z0-9]+")));
+    }
+
+    /// 意图:两个 proxy=true 服务的 auto 标签小写后相同(name="A" 缺省标签 a
+    /// vs 显式 subdomain="a")→ 同一子域命中非确定(DashMap 迭代序),
+    /// 必须告警而非静默。
+    #[test]
+    fn validate_proxy_warns_conflicting_auto_labels() {
+        let toml = r#"
+[proxy]
+domain = "x.example.com"
+http_bind = "0.0.0.0:8080"
+[[service]]
+name = "A"
+command = "/bin/true"
+proxy = true
+ui_url = "http://127.0.0.1:1"
+[[service]]
+name = "other"
+command = "/bin/true"
+proxy = true
+subdomain = "a"
+ui_url = "http://127.0.0.1:2"
+"#;
+        let r = Config::parse(toml).unwrap();
+        let errs = validate_config(&r);
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("标签") && e.contains("冲突")),
+            "标签冲突应告警,实际:{errs:?}"
+        );
+        // 单服务合法配置不误报
+        let toml = "[proxy]\ndomain = \"x.example.com\"\nhttp_bind = \"0.0.0.0:8080\"\n\
+[[service]]\nname = \"fs\"\ncommand = \"/bin/true\"\nproxy = true\nui_url = \"http://127.0.0.1:1\"\n";
+        let r = Config::parse(toml).unwrap();
+        let errs = validate_config(&r);
+        assert!(
+            !errs.iter().any(|e| e.contains("冲突")),
+            "单标签不应误报:{errs:?}"
+        );
     }
 
     /// 意图:subdomain 小写化存储(校验层按小写判断,存储层须对齐)——
