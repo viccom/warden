@@ -5963,6 +5963,7 @@ dependencies = [
  "reqwest-eventsource",
  "serde",
  "serde_json",
+ "sha2",
  "strip-ansi-escapes",
  "sysinfo",
  "thiserror 2.0.20",
