@@ -191,20 +191,44 @@ http-body-util = { version = "0.1", optional = true }
 
 ### P2 TLS 终止(单张通配证书)
 
-- [ ] **10. Red:TLS e2e**:rcgen 自签**通配证书**(dev-dep,`*.warden.domain.com`)→ HTTPS 经代理访问 auto/显式路由 → rustls 客户端(`dangerous` 接受自签)断言 body;HTTP→HTTPS 301 跳转(80 与 443 同配时)。
-- [ ] **11. Green**:`tls.rs`(tokio-rustls acceptor,单证书;**证书 mtime 轮询热重载**,30s 周期——为续期换证不停机铺路,P3 两条路线共用);https 上游支持(hyper-rustls)。**验证**:三绿 + `curl -k` 手工冒烟(记录于本文档实施记录)。
+- [x] **10. Red:TLS e2e**:rcgen 自签**通配证书**(dev-dep,`*.warden.domain.com`)→ HTTPS 经代理访问 auto/显式路由 → rustls 客户端(`dangerous` 接受自签)断言 body;HTTP→HTTPS 301 跳转(80 与 443 同配时)。
+- [x] **11. Green**:`tls.rs`(tokio-rustls acceptor,单证书;**证书 mtime 轮询热重载**,30s 周期——为续期换证不停机铺路,P3 两条路线共用);https 上游支持(hyper-rustls)。**验证**:三绿 + `curl -k` 手工冒烟(记录于本文档实施记录)。
 
 ### P3 证书到期检测 + 外部托管协同(1Panel / acme.sh)
 
 ACME 全流程由外部程序承担(现场 = 1Panel,通用等价 acme.sh/lego;签发/续期/challenge 一概不在 warden 内,第三轮确认 D13)。warden 侧职责 = **检测 + 可选调用**,体量大幅收窄:
 
-- [ ] **12. 证书到期检测 task**:后台周期(1h)解析 `cert_file` 的 notAfter(x509-parser,feature 门控依赖);剩余 < `expire_warn_days`(缺省 21)→ tracing warn + LogHub + 复用 `alert_webhook`(对齐 health 告警模式);每次检测 INFO 一行剩余天数(可观测)。
-- [ ] **13. 可选续期调用**:`renew_command` 配置时,到期前触发执行(带超时与日志捕获,复用 warden 进程管理经验);未配置则完全依赖外部托管侧自续期——两种形态都靠 P2 的 mtime 热重载生效,**warden 侧闭环不变**。当前现场(1Panel 自动续签)无需配置;到期检测的实际价值 = **监控 1Panel 续签链路健康**(若续签未同步到 warden 证书路径,11 月中旬起告警)。
-- [ ] **14. 手测文档**:`docs/TESTING-ACME.md` 记录**外部托管协同全流程**——现场以 1Panel 为主(续签同步目录配置、warden 到期检测/热重载观测、12 月续期演练);裸 acme.sh 场景(安装、DNS API 凭据、签发 `*.<domain>` 通配、`--install-cert` 落 warden cert 路径 + 可选 reloadcmd、续期验证)作为通用参考。
+- [x] **12. 证书到期检测 task**:后台周期(1h)解析 `cert_file` 的 notAfter(x509-parser,feature 门控依赖);剩余 < `expire_warn_days`(缺省 21)→ tracing warn + LogHub + 复用 `alert_webhook`(对齐 health 告警模式);每次检测 INFO 一行剩余天数(可观测)。
+- [x] **13. 可选续期调用**:`renew_command` 配置时,到期前触发执行(带超时与日志捕获,复用 warden 进程管理经验);未配置则完全依赖外部托管侧自续期——两种形态都靠 P2 的 mtime 热重载生效,**warden 侧闭环不变**。当前现场(1Panel 自动续签)无需配置;到期检测的实际价值 = **监控 1Panel 续签链路健康**(若续签未同步到 warden 证书路径,11 月中旬起告警)。
+- [x] **14. 手测文档**:`docs/TESTING-ACME.md` 记录**外部托管协同全流程**——现场以 1Panel 为主(续签同步目录配置、warden 到期检测/热重载观测、12 月续期演练);裸 acme.sh 场景(安装、DNS API 凭据、签发 `*.<domain>` 通配、`--install-cert` 落 warden cert 路径 + 可选 reloadcmd、续期验证)作为通用参考。
 
-### P5 可选增强(按需另行立项)
+### P5 可选增强(2026-09-19 提前实施完毕)
 
-路由 CRUD API、Web UI 路由管理页、路由级 metrics(5xx 计数)、access log 落盘轮转。
+路由 CRUD API、Web UI 路由管理页、路由级 metrics(5xx 计数)、access log 落盘轮转——全部落地:
+- CRUD:GET /api/v1/proxy + POST/PUT/DELETE /api/v1/proxy/routes/{host}(写回保注释,409/400/404 语义);
+- 热生效:HostRouter 持 SharedProxyConfig,reload 与 CRUD 写入免重启(监听/证书仍需重启);
+- metrics:已路由请求按 host 计数(5xx 单列),经 /api/v1/proxy 透出;
+- access log:proxy_access target + init_tracing 按日轮转 proxy-access.log.<date>;
+- Web UI:顶栏「反向代理」管理页 + 服务表单 proxy/subdomain/ui_url 字段。
+
+## 实施记录(P2/P3/P5,2026-09-19)
+
+- TLS:rustls(纯 ring 后端)+ tokio-rustls acceptor,ALPN 仅 http/1.1;https 入口
+  逐连接 hyper http1 conn,drain 15s 对齐;80/443 同配时 http 全量 301(Host 白名单防注入)。
+- 热重载:证书对 mtime 轮询(30s),换证竞态靠"失败沿用旧证书"兜底;e2e 以
+  rcgen 双 CA 换证验证(旧锚失败/新锚成功)。
+- https 上游:hyper-rustls + upstream_ca_file(私有 CA 场景);内层 connector
+  须 enforce_http(false)——hyper-rustls 自建内层同款,自带内层不关会在 TLS
+  层之前拒绝 https(踩坑记录,502 错误页现已带错误链)。
+- XFP 链式:前置代理注入的 X-Forwarded-Proto 透传(不再被自身 scheme 覆盖),
+  与 XFF 续接/嵌入式 XFH 三头语义对齐。
+- P3:1h 检测周期(首查在启动 1h 后);告警走 tracing + alert_webhook
+  (无 LogHub——证书检测无所属服务句柄,与 health 模式的差异点);
+  renew_command 走 sh -c/cmd /C,600s 超时 + 24h 冷却。
+- 真实冒烟(scratch daemon + 自签通配证书):301/TLS 显式路由/TLS auto 路由/
+  CRUD 热生效/XFP 三头/换证指纹变更/access log 落盘/reload 热改上游/SIGTERM
+  全链优雅退出,13 项全过(记录于会话;证书到期 warn 因 1h 周期未现场观测,
+  由单测 cert_expiry_days 覆盖)。
 
 ## 6. 涉及文件
 

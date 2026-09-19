@@ -25,12 +25,20 @@ log_dir       = "./logs"                  # warden 自身日志目录(按日滚�
 # [proxy]
 # domain    = "opc.dongx.site"              # 根级域名:auto 路由 = <subdomain>.<domain>
 # http_bind  = "0.0.0.0:8080"               # 生产目标 80;本机 80 被 OpenResty 占用 → 8080
-# # https_bind = "0.0.0.0:8443"            # P2 起;443 同被占用,实测 8443 空闲
+# # https_bind = "0.0.0.0:8443"            # TLS 终止(P2);443 同被占用,实测 8443 空闲
+# # cert_file = "/ssl/fullchain.pem"       # https 证书对(PEM;与 https_bind 成对配置)
+# # key_file  = "/ssl/privkey.pem"         # 证书换盘后 30s 内 mtime 热重载,无需重启
 # # connect_timeout_ms = 5000              # 上游连接超时(缺省 5000;仅约束连接建立)
 # # preserve_host = false                 # 转发时 Host 重写为上游;true = 保留客户端 Host
+# # upstream_ca_file = "/ssl/ca.pem"       # https 上游私有 CA(缺省 webpki 内置根)
+# # [proxy.acme]                          # 到期检测(P3);协同流程见 docs/TESTING-ACME.md
+# # expire_warn_days = 21                  # 剩余低于此值 → tracing warn + alert_webhook
+# # renew_command = "acme.sh --renew -d x" # 可选:到期前 warden 执行(sh -c,600s 超时,24h 冷却)
 # [[proxy.route]]                          # 显式路由(可多条;与 auto 并存时显式优先)
 # host = "fs2.opc.dongx.site"               # 精确 host 或 *.单层通配(须为 *.<domain>)
 # to   = "http://127.0.0.1:9000"           # 显式上游;或 service = "rs-iot" 引用被监护服务
+# ↑ 路由增删改可经 HTTP API(/api/v1/proxy/routes)或 reload 热生效,免重启;
+#   http/https 同配时 http 入口全量 301 → https。
 
 # ── 1. rs-iot 主程序(全字段演示)──────────────────────────────
 # REST :8790 / lux :6390,工业 IoT 边缘网关核心。
