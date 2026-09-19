@@ -120,11 +120,19 @@ pub async fn proxy_handler(
         .headers()
         .get("host")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_owned();
+    let log = ReqLog {
+        method: req.method().clone(),
+        host: host.clone(),
+        path: req.uri().path().to_owned(),
+        started: std::time::Instant::now(),
+    };
     if host.is_empty() {
-        return error_page(StatusCode::BAD_REQUEST, host, "请求缺少 Host 头");
+        log.emit(StatusCode::BAD_REQUEST, "-");
+        return error_page(StatusCode::BAD_REQUEST, &host, "请求缺少 Host 头");
     }
-    let decision = state.router.resolve(host);
+    let decision = state.router.resolve(&host);
     let (upstream, preserve_host, svc) = match decision {
         Decision::Route { to, preserve_host } => (to, preserve_host, None),
         Decision::RouteService {
@@ -137,9 +145,10 @@ pub async fn proxy_handler(
             Some(name),
         ),
         Decision::NotFound => {
+            log.emit(StatusCode::MISDIRECTED_REQUEST, "-");
             return error_page(
                 StatusCode::MISDIRECTED_REQUEST,
-                host,
+                &host,
                 "未知 Host(无精确/通配路由命中,auto 路由亦无此服务)",
             );
         }
@@ -150,30 +159,33 @@ pub async fn proxy_handler(
         Some(name) => match service_upstream(&state, &name).await {
             Ok(u) => u,
             Err(ServiceUpstreamError::NotFound) => {
+                log.emit(StatusCode::NOT_FOUND, &format!("service:{name}"));
                 return error_page(
                     StatusCode::NOT_FOUND,
-                    host,
+                    &host,
                     &format!("服务 '{name}' 不存在"),
                 );
             }
             Err(ServiceUpstreamError::Stopped(state_name)) => {
+                log.emit(StatusCode::SERVICE_UNAVAILABLE, &format!("service:{name}"));
                 return error_page(
                     StatusCode::SERVICE_UNAVAILABLE,
-                    host,
+                    &host,
                     &format!("服务 '{name}' 当前状态 {state_name}(未运行),稍后重试"),
                 );
             }
             Err(ServiceUpstreamError::NoUiUrl) => {
+                log.emit(StatusCode::BAD_GATEWAY, &format!("service:{name}"));
                 return error_page(
                     StatusCode::BAD_GATEWAY,
-                    host,
+                    &host,
                     &format!("服务 '{name}' 未配置 ui_url,无法转发"),
                 );
             }
         },
         None => upstream,
     };
-    forward_to(&state, req, &client, &upstream, preserve_host).await
+    forward_to(&state, req, &client, &upstream, preserve_host, &log).await
 }
 
 /// 解析并转发到上游 URI(to 可带 path 前缀,与请求 path 拼接)。
@@ -183,23 +195,20 @@ async fn forward_to(
     client: &SocketAddr,
     upstream: &str,
     preserve_host: bool,
+    log: &ReqLog,
 ) -> Response<axum::body::Body> {
     let uri = match build_upstream_uri(upstream, req.uri().path_and_query()) {
         Ok(u) => u,
         Err(e) => {
-            return error_page(
-                StatusCode::BAD_GATEWAY,
-                "",
-                &format!("上游 URI 非法({upstream}):{e}"),
-            )
+            let detail = format!("上游 URI 非法({upstream}):{e}");
+            log.emit(StatusCode::BAD_GATEWAY, upstream);
+            return error_page(StatusCode::BAD_GATEWAY, &log.host, &detail);
         }
     };
     let Some(authority) = uri.authority().map(|a| a.as_str().to_owned()) else {
-        return error_page(
-            StatusCode::BAD_GATEWAY,
-            "",
-            &format!("上游 URI 缺少 authority:{upstream}"),
-        );
+        let detail = format!("上游 URI 缺少 authority:{upstream}");
+        log.emit(StatusCode::BAD_GATEWAY, upstream);
+        return error_page(StatusCode::BAD_GATEWAY, &log.host, &detail);
     };
     let (mut parts, body) = req.into_parts();
     rewrite_headers(
@@ -216,11 +225,9 @@ async fn forward_to(
     let upstream_req = match builder.body(body) {
         Ok(r) => r,
         Err(e) => {
-            return error_page(
-                StatusCode::BAD_GATEWAY,
-                "",
-                &format!("构造上游请求失败:{e}"),
-            )
+            let detail = format!("构造上游请求失败:{e}");
+            log.emit(StatusCode::BAD_GATEWAY, upstream);
+            return error_page(StatusCode::BAD_GATEWAY, &log.host, &detail);
         }
     };
     // 流式直传:请求/响应 body 全程透传(SSE/大文件零缓冲);
@@ -237,16 +244,21 @@ async fn forward_to(
                 }
                 builder = builder.header(k, v);
             }
+            log.emit(status, upstream);
             match builder.body(axum::body::Body::new(up_body)) {
                 Ok(r) => r,
-                Err(e) => error_page(StatusCode::BAD_GATEWAY, "", &format!("构造响应失败:{e}")),
+                Err(e) => error_page(
+                    StatusCode::BAD_GATEWAY,
+                    &log.host,
+                    &format!("构造响应失败:{e}"),
+                ),
             }
         }
-        Err(e) => error_page(
-            StatusCode::BAD_GATEWAY,
-            "",
-            &format!("上游连接失败({upstream}):{e}"),
-        ),
+        Err(e) => {
+            let detail = format!("上游连接失败({upstream}):{e}");
+            log.emit(StatusCode::BAD_GATEWAY, upstream);
+            error_page(StatusCode::BAD_GATEWAY, &log.host, &detail)
+        }
     }
 }
 
@@ -277,15 +289,69 @@ fn is_hop_by_hop(name: &str) -> bool {
         || name.eq_ignore_ascii_case("transfer-encoding")
 }
 
+/// HTML 实体转义(错误页插值点防注入:host/detail 来自客户端输入)。
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// access log 单行(设计 §4.4):method/host/path/status/latency/upstream。
+/// path 只传路径部分(调用方用 uri().path(),不含 query——敏感查询串不落日志)。
+fn access_line(
+    method: &str,
+    host: &str,
+    path: &str,
+    status: u16,
+    latency_ms: u128,
+    upstream: &str,
+) -> String {
+    format!("[proxy] {method} {host}{path} {status} {latency_ms}ms upstream={upstream}")
+}
+
+/// 请求级日志上下文(handler 各返回分支共用)。
+struct ReqLog {
+    method: axum::http::Method,
+    host: String,
+    path: String,
+    started: std::time::Instant,
+}
+
+impl ReqLog {
+    fn emit(&self, status: StatusCode, upstream: &str) {
+        tracing::info!(
+            "{}",
+            access_line(
+                self.method.as_str(),
+                &self.host,
+                &self.path,
+                status.as_u16(),
+                self.started.elapsed().as_millis(),
+                upstream
+            )
+        );
+    }
+}
+
 /// 极简错误页(HTML):含状态、Host、原因(设计 §4.5,不进 WardenError)。
+/// 插值全部经 html_escape(host/detail 含客户端输入)。
 fn error_page(status: StatusCode, host: &str, detail: &str) -> Response<axum::body::Body> {
     let body = format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{}</title></head>\
          <body><h1>{}</h1><p>Host: {}</p><p>{}</p><hr><p>warden reverse proxy</p></body></html>",
         status.as_str(),
         status,
-        host,
-        detail
+        html_escape(host),
+        html_escape(detail)
     );
     (status, [("content-type", "text/html; charset=utf-8")], body).into_response()
 }
@@ -353,5 +419,35 @@ mod tests {
         rewrite_headers(&mut h, "203.0.113.5", "upstream:8080", "https", false);
         assert_eq!(h.get("x-forwarded-proto").unwrap(), "https");
         assert_eq!(h.get("x-forwarded-host").unwrap(), "a.example.com");
+    }
+
+    /// 意图:错误页插值(host/detail 来自客户端输入)必须 HTML 转义,
+    /// 防 Host 头注入脚本(对齐 Web UI textContent 防 XSS 的既有防线)。
+    #[test]
+    fn html_escape_neutralizes_markup() {
+        let e = html_escape(r#"<script>alert("x&y")</script>"#);
+        assert!(!e.contains('<'), "不应残留原始 <: {e}");
+        assert!(!e.contains('>'), "不应残留原始 >: {e}");
+        assert!(e.contains("&lt;script&gt;"), "标签实体化: {e}");
+        assert!(e.contains("&amp;"), "and 符号实体化: {e}");
+        assert!(e.contains("&quot;"), "引号实体化: {e}");
+    }
+
+    /// 意图:access log 行格式——method/host/path/status/latency/upstream,
+    /// path 只传路径部分(调用方用 uri().path(),天然不含 query,防敏感串落日志)。
+    #[test]
+    fn access_line_format() {
+        let line = access_line(
+            "GET",
+            "fs.x.com",
+            "/api/v1/img",
+            200,
+            42,
+            "http://127.0.0.1:8790",
+        );
+        assert_eq!(
+            line,
+            "[proxy] GET fs.x.com/api/v1/img 200 42ms upstream=http://127.0.0.1:8790"
+        );
     }
 }

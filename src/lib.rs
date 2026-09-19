@@ -134,11 +134,18 @@ pub async fn serve_with_shutdown(
     // 反向代理:绑 http_bind(https_bind 属 P2);绑定失败不致命——
     // 监护/API 是 daemon 核心,反代是附加能力,降级为 error 日志继续
     #[cfg(feature = "reverse-proxy")]
+    let mut proxy_task: Option<tokio::task::JoinHandle<()>> = None;
+    #[cfg(feature = "reverse-proxy")]
     if let Some(pc) = proxy_launch {
         match pc.http_bind.as_deref() {
             Some(bind) if !bind.is_empty() => match TcpListener::bind(bind).await {
                 Ok(l) => {
-                    crate::proxy::spawn(pc, state.supervisor.clone(), l, shutdown.clone());
+                    proxy_task = Some(crate::proxy::spawn(
+                        pc,
+                        state.supervisor.clone(),
+                        l,
+                        shutdown.clone(),
+                    ));
                 }
                 Err(e) => {
                     tracing::error!("[warden] 反代监听 {bind} 绑定失败:{e}(忽略,继续监护/API)")
@@ -195,6 +202,13 @@ pub async fn serve_with_shutdown(
 
     // 等 stop_all 完成(子进程 graceful 收尾),再退出
     let _ = stop_task.await;
+    // 反代 drain(15s 上限)独立于 API 5s:两组并行等待,总退出 = max(两链)
+    // (设计 §4.5——不 await 会随主流程退出被 runtime 硬杀,在途代理连接/WS
+    //  隧道实际只剩 API 的 5s 上限,与设计相悖)
+    #[cfg(feature = "reverse-proxy")]
+    if let Some(t) = proxy_task {
+        let _ = t.await;
+    }
     tracing::info!("[warden] 已退出");
     Ok(())
 }

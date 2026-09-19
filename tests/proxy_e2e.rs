@@ -229,6 +229,19 @@ async fn returns_421_for_unknown_host() {
     assert!(body.contains("b.opc.dongx.site"), "错误页含 Host:{body}");
 }
 
+/// 意图:恶意 Host 注入的标记必须被 HTML 转义——错误页会被浏览器渲染,
+/// 原样嵌入即反射型 XSS(对齐 Web UI textContent 防线)。
+#[tokio::test]
+async fn error_page_escapes_malicious_host() {
+    let up = plain_upstream().await;
+    let proxy_addr = spawn_proxy(vec![route("fs.opc.dongx.site", format!("http://{up}"))]).await;
+    let resp = get_via_proxy(proxy_addr, "<script>alert(1)</script>.opc.dongx.site").await;
+    assert_eq!(resp.status(), 421);
+    let body = resp.text().await.unwrap();
+    assert!(!body.contains("<script"), "脚本标记必须转义:{body}");
+    assert!(body.contains("&lt;script&gt;"), "应实体化呈现:{body}");
+}
+
 /// 意图:上游连接拒绝(无人监听端口)→ 502 错误页。
 #[tokio::test]
 async fn returns_502_when_upstream_refused() {
