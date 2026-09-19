@@ -243,53 +243,7 @@ pub fn validate_config_with_services(cfg: &Config, service_names: &[&str]) -> Ve
     }
     let mut seen = HashSet::new();
     for r in &p.routes {
-        if r.host.is_empty() {
-            warns.push("路由 host 为空(须为域名或 '*.' 通配)".into());
-        } else if r.host.contains('/') || r.host.contains('\\') {
-            warns.push(format!("路由 '{}':host 禁 path 部分", r.host));
-        } else if r.host.contains(':') {
-            warns.push(format!(
-                "路由 '{}':host 禁端口(请求 Host 匹配前已剥端口,带端口的 host 永不命中)",
-                r.host
-            ));
-        } else if r.host.contains('*') && !r.host.starts_with("*.") {
-            warns.push(format!("路由 '{}':通配仅支持 '*.' 前缀形态(单层)", r.host));
-        }
-        // to / service 二选一且必填其一
-        match (&r.to, &r.service) {
-            (Some(_), Some(_)) => {
-                warns.push(format!("路由 '{}':to 与 service 二选一(同时配置)", r.host));
-            }
-            (None, None) => {
-                warns.push(format!("路由 '{}':to 与 service 二选一(均未配置)", r.host));
-            }
-            _ => {}
-        }
-        if let Some(to) = &r.to {
-            if !valid_upstream_uri(to) {
-                warns.push(format!(
-                    "路由 '{}':to 必须是合法的 http/https URI:{to}",
-                    r.host
-                ));
-            }
-        }
-        // 通配仅允许前缀 `*.` 且只匹配单层子域:单根域 + 单张通配证书模型(D9/D10)
-        // 下,配置层只认 `*.<domain>`;引擎匹配更通用(最长后缀),不在此限制
-        if let Some(suffix) = r.host.strip_prefix("*.") {
-            match &p.domain {
-                Some(d) if suffix == d => {}
-                Some(d) => warns.push(format!(
-                    "路由 '{}':通配仅支持单层子域 '*.{d}'(与 [proxy] domain 对齐)",
-                    r.host
-                )),
-                None => warns.push(format!("路由 '{}':通配路由需要 [proxy] domain", r.host)),
-            }
-        }
-        if let Some(svc) = &r.service {
-            if !service_names.contains(&svc.as_str()) {
-                warns.push(format!("路由 '{}' 引用的服务 '{svc}' 不存在", r.host));
-            }
-        }
+        warns.extend(validate_proxy_route(r, p.domain.as_deref(), service_names));
         if !seen.insert(r.host.clone()) {
             warns.push(format!("路由 host '{}' 重复", r.host));
         }
@@ -329,6 +283,76 @@ pub fn validate_config_with_services(cfg: &Config, service_names: &[&str]) -> Ve
                     svc.name
                 ));
             }
+        }
+    }
+    warns
+}
+
+/// 校验单条显式路由(纯函数;全量校验与运行时 CRUD 共用)。
+/// 查重不在内(需要全表上下文,由调用方负责)。
+pub fn validate_proxy_route(
+    r: &ProxyRoute,
+    domain: Option<&str>,
+    service_names: &[&str],
+) -> Vec<String> {
+    let mut warns = Vec::new();
+    if r.host.is_empty() {
+        warns.push("路由 host 为空(须为域名或 '*.' 通配)".into());
+    } else if r.host.contains('/') || r.host.contains('\\') {
+        warns.push(format!("路由 '{}':host 禁 path 部分", r.host));
+    } else if r.host.contains(':') {
+        warns.push(format!(
+            "路由 '{}':host 禁端口(请求 Host 匹配前已剥端口,带端口的 host 永不命中)",
+            r.host
+        ));
+    } else if r.host.contains('*') && !r.host.starts_with("*.") {
+        warns.push(format!("路由 '{}':通配仅支持 '*.' 前缀形态(单层)", r.host));
+    } else {
+        // 字符白名单(通配剥前缀后判断):空格等垃圾字符永不匹配任何请求 Host
+        let body = r.host.strip_prefix("*.").unwrap_or(&r.host);
+        if !body
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        {
+            warns.push(format!(
+                "路由 '{}':host 含非法字符(仅允许字母/数字/点/连字符)",
+                r.host
+            ));
+        }
+    }
+    // to / service 二选一且必填其一
+    match (&r.to, &r.service) {
+        (Some(_), Some(_)) => {
+            warns.push(format!("路由 '{}':to 与 service 二选一(同时配置)", r.host));
+        }
+        (None, None) => {
+            warns.push(format!("路由 '{}':to 与 service 二选一(均未配置)", r.host));
+        }
+        _ => {}
+    }
+    if let Some(to) = &r.to {
+        if !valid_upstream_uri(to) {
+            warns.push(format!(
+                "路由 '{}':to 必须是合法的 http/https URI:{to}",
+                r.host
+            ));
+        }
+    }
+    // 通配仅允许前缀 `*.` 且只匹配单层子域:单根域 + 单张通配证书模型(D9/D10)
+    // 下,配置层只认 `*.<domain>`;引擎匹配更通用(最长后缀),不在此限制
+    if let Some(suffix) = r.host.strip_prefix("*.") {
+        match domain {
+            Some(d) if suffix == d => {}
+            Some(d) => warns.push(format!(
+                "路由 '{}':通配仅支持单层子域 '*.{d}'(与 [proxy] domain 对齐)",
+                r.host
+            )),
+            None => warns.push(format!("路由 '{}':通配路由需要 [proxy] domain", r.host)),
+        }
+    }
+    if let Some(svc) = &r.service {
+        if !service_names.contains(&svc.as_str()) {
+            warns.push(format!("路由 '{}' 引用的服务 '{svc}' 不存在", r.host));
         }
     }
     warns

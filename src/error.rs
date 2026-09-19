@@ -24,6 +24,12 @@ pub enum WardenError {
     #[error("config error: {0}")]
     Config(String),
 
+    #[error("conflict: {0}")]
+    Conflict(String),
+
+    #[error("not found: {0}")]
+    NotFound(String),
+
     #[error("service not found: {0}")]
     ServiceNotFound(String),
 
@@ -48,8 +54,8 @@ impl WardenError {
     fn parts(&self) -> (&'static str, StatusCode) {
         use WardenError::*;
         match self {
-            ServiceNotFound(_) => ("not_found", StatusCode::NOT_FOUND),
-            InvalidState(..) => ("invalid_state", StatusCode::CONFLICT),
+            ServiceNotFound(_) | NotFound(_) => ("not_found", StatusCode::NOT_FOUND),
+            InvalidState(..) | Conflict(_) => ("conflict", StatusCode::CONFLICT),
             Unauthorized => ("unauthorized", StatusCode::UNAUTHORIZED),
             Config(_) => ("config", StatusCode::BAD_REQUEST),
             Io(_) | Toml(_) | Json(_) | Internal(_) => {

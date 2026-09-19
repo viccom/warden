@@ -19,6 +19,8 @@ use crate::supervisor::Supervisor;
 pub mod auth;
 pub mod routes_health;
 pub mod routes_logs;
+#[cfg(feature = "reverse-proxy")]
+pub mod routes_proxy;
 pub mod routes_service;
 pub mod routes_ui;
 
@@ -118,7 +120,9 @@ fn tauri_cors() -> tower_http::cors::CorsLayer {
 
 pub fn build_router(state: AppState) -> Router {
     use axum::routing::{delete, get, post, put};
-    Router::new()
+    // OFF 形态下无反代路由注册,mut 不再被使用
+    #[allow(unused_mut)]
+    let mut router = Router::new()
         .route("/", get(routes_ui::index))
         .route("/api/v1/health", get(routes_health::health))
         .route("/api/v1/services", get(routes_service::list))
@@ -162,7 +166,19 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/services/{name}/metrics",
             get(routes_service::metrics),
         )
-        .route("/api/v1/config/reload", post(routes_service::reload))
+        .route("/api/v1/config/reload", post(routes_service::reload));
+    // 反代管理端点(P5):无 feature 时不注册(引擎未编译,管理面同样不可用)
+    #[cfg(feature = "reverse-proxy")]
+    {
+        router = router
+            .route("/api/v1/proxy", get(routes_proxy::get_proxy))
+            .route("/api/v1/proxy/routes", post(routes_proxy::create_route))
+            .route(
+                "/api/v1/proxy/routes/{host}",
+                put(routes_proxy::update_route).delete(routes_proxy::delete_route),
+            );
+    }
+    router
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,

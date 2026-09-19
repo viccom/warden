@@ -302,5 +302,19 @@ pub async fn reload(State(st): State<AppState>) -> WResult<impl IntoResponse> {
     let cfg = config::Config::load(st.config_path.as_deref())?;
     let count = cfg.services.len();
     st.supervisor.apply_config(&cfg).await;
+    // [proxy] 段热同步(P5):显式路由/domain/preserve_host 免重启生效;
+    // 监听地址与证书路径的变更仍需重启(引擎 task 启动期绑定)。
+    #[cfg(feature = "reverse-proxy")]
+    if let Some(shared) = &st.proxy_shared {
+        match cfg.proxy.clone() {
+            Some(p) => {
+                *shared.write().expect("proxy 锁中毒") = std::sync::Arc::new(p);
+                tracing::info!("[proxy] 路由热更新已生效(监听/证书变更需重启)");
+            }
+            None => {
+                tracing::warn!("[proxy] 配置文件已移除 [proxy] 段,引擎沿用旧配置(彻底移除需重启)")
+            }
+        }
+    }
     Ok(Json(json!({ "status": "reloaded", "services": count })))
 }

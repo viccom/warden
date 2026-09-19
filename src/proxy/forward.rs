@@ -125,17 +125,23 @@ pub async fn proxy_handler(
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default()
         .to_owned();
-    let log = ReqLog {
+    let mut log = ReqLog {
         method: req.method().clone(),
         host: host.clone(),
         path: req.uri().path().to_owned(),
         started: std::time::Instant::now(),
+        route: None,
+        metrics: Some(state.metrics.clone()),
     };
     if host.is_empty() {
         log.emit(StatusCode::BAD_REQUEST, "-");
         return error_page(StatusCode::BAD_REQUEST, &host, "请求缺少 Host 头");
     }
     let decision = state.router.resolve(&host);
+    // 已路由请求才计入 metrics(键 = 规范化 host;421/坏 Host 不计,防键空间攻击)
+    if !matches!(decision, Decision::NotFound) {
+        log.route = Some(crate::proxy::router::HostRouter::normalize_host(&host));
+    }
     let (upstream, preserve_host, svc) = match decision {
         Decision::Route { to, preserve_host } => (to, preserve_host, None),
         Decision::RouteService {
@@ -539,16 +545,25 @@ fn access_line(
 }
 
 /// 请求级日志上下文(handler 各返回分支共用)。
+/// `route`:已路由 host(Some 才计 metrics);`metrics`:None 时只记日志不计数。
 struct ReqLog {
     method: axum::http::Method,
     host: String,
     path: String,
     started: std::time::Instant,
+    route: Option<String>,
+    metrics: Option<std::sync::Arc<crate::proxy::ProxyMetrics>>,
 }
 
 impl ReqLog {
     fn emit(&self, status: StatusCode, upstream: &str) {
+        if let (Some(m), Some(r)) = (&self.metrics, &self.route) {
+            m.record(r, status.as_u16());
+        }
+        // 专用 target:控制台照常输出,init_tracing 另挂按日轮转的
+        // proxy-access.log 层(P5 access log 落盘)
         tracing::info!(
+            target: "proxy_access",
             "{}",
             access_line(
                 self.method.as_str(),

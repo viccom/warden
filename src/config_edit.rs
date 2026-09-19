@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::{ArrayOfTables, Document, Item, Table};
 
+use crate::config::ProxyRoute;
 use crate::error::{WResult, WardenError};
 use crate::model::ServiceConfig;
 
@@ -108,6 +109,32 @@ impl ConfigFile {
         }
     }
 
+    /// upsert [proxy.route] 条目(按 host 匹配替换,无则追加;[proxy]/route
+    /// 段不存在则创建)。调用方先 validate。
+    pub fn upsert_proxy_route(&mut self, route: &ProxyRoute) -> WResult<()> {
+        let arr = proxy_route_array_mut(&mut self.doc)?;
+        let idx = find_route_index(arr, &route.host);
+        match idx {
+            Some(i) => {
+                *arr.get_mut(i).expect("find_route_index 已校验") = proxy_route_to_table(route)
+            }
+            None => arr.push(proxy_route_to_table(route)),
+        }
+        Ok(())
+    }
+
+    /// 按 host 删除 [proxy.route] 条目;返回是否存在。
+    pub fn remove_proxy_route(&mut self, host: &str) -> WResult<bool> {
+        let arr = proxy_route_array_mut(&mut self.doc)?;
+        match find_route_index(arr, host) {
+            Some(i) => {
+                arr.remove(i);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// 落盘(原子写:临时文件 + rename)。
     pub fn save(&self) -> WResult<()> {
         let mut out = self.doc.to_string();
@@ -116,6 +143,44 @@ impl ConfigFile {
         }
         atomic_write(&self.path, &out)
     }
+}
+
+/// 取(或初始化)`[[proxy.route]]` 数组;[proxy] 存在但非表/route 非数组时报错。
+fn proxy_route_array_mut(doc: &mut Document) -> WResult<&mut ArrayOfTables> {
+    if !doc.contains_key("proxy") {
+        doc.insert("proxy", Item::Table(Table::new()));
+    }
+    let proxy = doc["proxy"]
+        .as_table_mut()
+        .ok_or_else(|| WardenError::Config("配置文件的 [proxy] 段不是表".into()))?;
+    if !proxy.contains_key("route") {
+        proxy.insert("route", Item::ArrayOfTables(ArrayOfTables::new()));
+    }
+    proxy["route"].as_array_of_tables_mut().ok_or_else(|| {
+        WardenError::Config("配置文件的 [proxy] route 不是 [[proxy.route]] 数组".into())
+    })
+}
+
+/// 在 [[proxy.route]] 数组中按 host 定位下标。
+fn find_route_index(arr: &ArrayOfTables, host: &str) -> Option<usize> {
+    arr.iter()
+        .position(|t| t.get("host").and_then(Item::as_str) == Some(host))
+}
+
+/// ProxyRoute → 规范化 toml 表(None 字段不写,保持文件简洁)。
+fn proxy_route_to_table(r: &ProxyRoute) -> Table {
+    let mut t = Table::new();
+    t["host"] = toml_edit::value(r.host.clone());
+    if let Some(to) = &r.to {
+        t["to"] = toml_edit::value(to.clone());
+    }
+    if let Some(svc) = &r.service {
+        t["service"] = toml_edit::value(svc.clone());
+    }
+    if let Some(p) = r.preserve_host {
+        t["preserve_host"] = toml_edit::value(p);
+    }
+    t
 }
 
 /// 取(或初始化)`[[service]]` 数组;service 段存在但非数组时报错。

@@ -173,6 +173,21 @@
   .cfghl .tk-num { color: #d9a0e0; }
   .cfghl .tk-bool { color: #e0917f; }
   .cfghint { margin-right: auto; font-size: 12px; color: var(--sub); }
+  /* 反代管理页(P5) */
+  .pxview { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; overflow: auto; }
+  .pxbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .pxbar .info { font-size: 12px; color: var(--sub); }
+  .pxwrap { display: flex; flex-direction: column; gap: 16px; }
+  .pxwrap h3 { margin: 0 0 6px; font-size: 13px; color: var(--sub); font-weight: 600; }
+  .pxtable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .pxtable th { text-align: left; color: var(--sub); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  .pxtable td { padding: 5px 8px; border-bottom: 1px solid var(--border); }
+  .pxtable td.op { white-space: nowrap; }
+  .pxtable .mono { font-family: Consolas, "Cascadia Mono", monospace; }
+  .pxtable button.btn { margin-right: 4px; }
+  .tag { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 11px;
+         background: var(--panel); border: 1px solid var(--border); color: var(--sub); }
+  .tag.err { color: #e5484d; border-color: #e5484d55; }
 </style>
 </head>
 <body>
@@ -184,6 +199,7 @@
     <span class="stat" id="count"></span>
   </div>
   <div class="grow"></div>
+  <button class="btn" id="pxBtn" onclick="toggleProxyView()">反向代理</button>
   <div class="token">
     <input id="tok" type="password" placeholder="token(可选)">
     <button class="btn" onclick="saveToken()">保存</button>
@@ -220,6 +236,52 @@
   </section>
 </main>
 
+<!-- 反向代理管理页(P5):与主视图互斥切换 -->
+<section class="pxview" id="pxview" style="display:none">
+  <div class="pxbar">
+    <span class="info" id="pxGlobal">加载中…</span>
+    <span class="grow"></span>
+    <button class="btn sm" onclick="loadProxy()">刷新</button>
+    <button class="btn primary sm" onclick="openRouteForm()">＋ 新增路由</button>
+  </div>
+  <div class="pxwrap">
+    <div>
+      <h3>显式路由([[proxy.route]],写回 services.toml,即时生效)</h3>
+      <table class="pxtable"><thead><tr>
+        <th>Host</th><th>上游</th><th>保留 Host</th><th>操作</th>
+      </tr></thead><tbody id="pxRoutes"></tbody></table>
+    </div>
+    <div>
+      <h3>auto 服务暴露(<code>&lt;subdomain&gt;.&lt;domain&gt;</code>;服务属性里配 proxy/ui_url)</h3>
+      <table class="pxtable"><thead><tr>
+        <th>子域</th><th>服务</th><th>ui_url</th><th>状态</th>
+      </tr></thead><tbody id="pxAuto"></tbody></table>
+    </div>
+    <div>
+      <h3>路由 metrics(累计,daemon 启动起)</h3>
+      <table class="pxtable"><thead><tr>
+        <th>路由</th><th>请求数</th><th>5xx</th>
+      </tr></thead><tbody id="pxMetrics"></tbody></table>
+    </div>
+  </div>
+</section>
+
+<!-- 路由编辑表单(新增/编辑共用) -->
+<div class="overlay" id="routeOverlay" style="display:none">
+  <div class="modal">
+    <h3 id="routeTitle">新增路由</h3>
+    <div class="field"><label>Host *</label><input id="r_host" type="text" placeholder="如 fs.x.example.com 或 *.x.example.com"></div>
+    <div class="field"><label>上游 URI(to;与 service 二选一)</label><input id="r_to" type="text" placeholder="http://127.0.0.1:9000"></div>
+    <div class="field"><label>或引用被监护服务(service)</label><select id="r_service"></select></div>
+    <div class="chk"><label><input id="r_ph" type="checkbox"> 保留客户端 Host(preserve_host)</label></div>
+    <div class="err" id="routeErr"></div>
+    <div class="actions">
+      <button class="btn" onclick="closeRouteForm()">取消</button>
+      <button class="btn primary" onclick="submitRouteForm()">保存</button>
+    </div>
+  </div>
+</div>
+
 <!-- 服务编辑表单(新增/编辑共用) -->
 <div class="overlay" id="formOverlay" style="display:none">
   <div class="modal">
@@ -251,9 +313,14 @@
       <div class="field"><label>健康检查间隔(秒)</label><input id="f_healthinterval" type="number" value="5" min="1"></div>
     </div>
     <div class="field"><label>配置文件(桌面版「编辑」按钮用;此处仅保存路径)</label><input id="f_configfile" type="text" placeholder="如 E:/rsiot-field/config.toml"></div>
+    <div class="row">
+      <div class="field"><label>反代子域标签(auto 路由用)</label><input id="f_subdomain" type="text" placeholder="缺省=服务名;[a-z0-9]+"></div>
+      <div class="field"><label>反代上游 ui_url</label><input id="f_uiurl" type="text" placeholder="如 http://127.0.0.1:8790"></div>
+    </div>
     <div class="chk">
       <label><input id="f_autostart" type="checkbox"> 自动启动</label>
       <label><input id="f_autorestart" type="checkbox"> 崩溃自动重启</label>
+      <label><input id="f_proxy" type="checkbox"> 经反代域名暴露</label>
     </div>
     <div class="err" id="formErr"></div>
     <div class="actions">
@@ -625,7 +692,7 @@ function openForm(name) {
   editingCfg = null;
   document.getElementById('formErr').textContent = '';
   document.getElementById('formTitle').textContent = name ? '编辑服务:' + name : '新增服务';
-  ['f_name','f_command','f_args','f_workdir','f_encoding','f_env','f_group','f_description','f_configfile','f_healthhost','f_healthport'].forEach(id => {
+  ['f_name','f_command','f_args','f_workdir','f_encoding','f_env','f_group','f_description','f_configfile','f_healthhost','f_healthport','f_subdomain','f_uiurl'].forEach(id => {
     document.getElementById(id).value = '';
   });
   document.getElementById('f_graceful').value = '10';
@@ -636,6 +703,7 @@ function openForm(name) {
   document.getElementById('f_healthinterval').value = '5';
   document.getElementById('f_autostart').checked = false;
   document.getElementById('f_autorestart').checked = false;
+  document.getElementById('f_proxy').checked = false;
   if (name) {
     // 编辑:拉完整配置预填(含 restart/health 子字段,避免保存时被 serde default 重置)
     api('/api/v1/services/' + enc(name) + '/config').then(cfg => {
@@ -660,6 +728,9 @@ function openForm(name) {
       document.getElementById('f_configfile').value = cfg.config_file || '';
       document.getElementById('f_autostart').checked = !!cfg.auto_start;
       document.getElementById('f_autorestart').checked = !!cfg.auto_restart;
+      document.getElementById('f_proxy').checked = !!cfg.proxy;
+      document.getElementById('f_subdomain').value = cfg.subdomain || '';
+      document.getElementById('f_uiurl').value = cfg.ui_url || '';
     }).catch(e => showToast('加载配置失败:' + e.message, true));
   } else {
     document.getElementById('f_name').disabled = false;
@@ -693,8 +764,10 @@ function submitForm() {
       backoff_factor: editingCfg?.restart?.backoff_factor ?? 2.0,
       restart_window_secs: parseInt(document.getElementById('f_restartwin').value) || 60,
     },
-    // ui_url 表单不暴露(桌面版专属入口),编辑时原样保留
-    ui_url: editingCfg?.ui_url ?? null,
+    // 反代暴露(auto 路由):ui_url 为上游,subdomain 为子域标签
+    ui_url: document.getElementById('f_uiurl').value.trim() || null,
+    subdomain: document.getElementById('f_subdomain').value.trim() || null,
+    proxy: document.getElementById('f_proxy').checked,
     config_file: document.getElementById('f_configfile').value.trim() || null,
     health: (document.getElementById('f_healthhost').value.trim() && document.getElementById('f_healthport').value)
       ? {
@@ -826,6 +899,164 @@ async function saveConfigFile(doFormat) {
   }
 }
 
+// ── 反向代理管理页(P5)────────────────────────────────
+let pxOpen = false;
+function toggleProxyView() {
+  pxOpen = !pxOpen;
+  document.getElementById('pxview').style.display = pxOpen ? 'flex' : 'none';
+  document.querySelector('main').style.display = pxOpen ? 'none' : '';
+  document.getElementById('pxBtn').classList.toggle('primary', pxOpen);
+  if (pxOpen) loadProxy();
+}
+
+async function loadProxy() {
+  let px, services;
+  try {
+    px = await api('/api/v1/proxy');
+    services = (await api('/api/v1/services')).services || [];
+  } catch (e) {
+    document.getElementById('pxGlobal').textContent = '加载失败:' + e.message + '(404 = daemon 未编译 reverse-proxy feature)';
+    return;
+  }
+  // 全局信息
+  const parts = [];
+  parts.push(px.enabled ? '<span class="tag">引擎运行</span>' : '<span class="tag err">未启用([proxy] 段缺失)</span>');
+  if (px.domain) parts.push('域名 <b>' + esc(px.domain) + '</b>');
+  if (px.http_bind) parts.push('http ' + esc(px.http_bind));
+  if (px.https_bind) parts.push('https ' + esc(px.https_bind));
+  parts.push('preserve_host=' + (px.preserve_host ? 'true' : 'false'));
+  document.getElementById('pxGlobal').innerHTML = parts.join(' · ');
+
+  // 显式路由表
+  const rt = document.getElementById('pxRoutes');
+  rt.innerHTML = '';
+  if (!px.routes || !px.routes.length) {
+    rt.innerHTML = '<tr><td colspan="4" class="empty">暂无显式路由</td></tr>';
+  }
+  for (const r of px.routes) {
+    const tr = document.createElement('tr');
+    const td1 = document.createElement('td');
+    td1.className = 'mono'; td1.textContent = r.host;
+    const td2 = document.createElement('td');
+    td2.className = 'mono';
+    td2.textContent = r.to || ('service:' + r.service);
+    const td3 = document.createElement('td');
+    td3.textContent = r.preserve_host == null ? '(全局)' : (r.preserve_host ? '是' : '否');
+    const td4 = document.createElement('td');
+    td4.className = 'op';
+    const be = document.createElement('button');
+    be.className = 'btn sm'; be.textContent = '编辑';
+    be.onclick = () => openRouteForm(r);
+    const bd = document.createElement('button');
+    bd.className = 'btn sm del'; bd.textContent = '删除';
+    bd.onclick = () => deleteRoute(r.host);
+    td4.append(be, bd);
+    tr.append(td1, td2, td3, td4);
+    rt.appendChild(tr);
+  }
+
+  // auto 服务暴露表(proxy=true 的服务)
+  const au = document.getElementById('pxAuto');
+  au.innerHTML = '';
+  const exposed = services.filter(x => x.proxy);
+  if (!exposed.length) au.innerHTML = '<tr><td colspan="4" class="empty">暂无暴露服务(服务属性勾选「经反代域名暴露」)</td></tr>';
+  for (const x of exposed) {
+    const tr = document.createElement('tr');
+    const t1 = document.createElement('td');
+    t1.className = 'mono';
+    t1.textContent = (x.subdomain || x.name).toLowerCase() + (px.domain ? '.' + px.domain : '');
+    const t2 = document.createElement('td');
+    t2.textContent = x.name;
+    const t3 = document.createElement('td');
+    t3.className = 'mono'; t3.textContent = x.ui_url || '(未配置 → 502)';
+    const t4 = document.createElement('td');
+    t4.textContent = (x.state && x.state.state) || 'unknown';
+    tr.append(t1, t2, t3, t4);
+    au.appendChild(tr);
+  }
+
+  // metrics 表
+  const mt = document.getElementById('pxMetrics');
+  mt.innerHTML = '';
+  if (!px.metrics || !px.metrics.length) mt.innerHTML = '<tr><td colspan="3" class="empty">暂无流量</td></tr>';
+  for (const m of px.metrics) {
+    const tr = document.createElement('tr');
+    const t1 = document.createElement('td'); t1.className = 'mono'; t1.textContent = m.route;
+    const t2 = document.createElement('td'); t2.textContent = m.requests;
+    const t3 = document.createElement('td');
+    t3.textContent = m.server_errors;
+    if (m.server_errors > 0) { const tag = document.createElement('span'); tag.className = 'tag err'; tag.textContent = m.server_errors; t3.textContent = ''; t3.appendChild(tag); }
+    tr.append(t1, t2, t3);
+    mt.appendChild(tr);
+  }
+}
+
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// 路由表单(null=新增;否则编辑既有)
+let editingRoute = null;
+function openRouteForm(route) {
+  editingRoute = route || null;
+  document.getElementById('routeErr').textContent = '';
+  document.getElementById('routeTitle').textContent = route ? '编辑路由:' + route.host : '新增路由';
+  document.getElementById('r_host').value = route ? route.host : '';
+  document.getElementById('r_host').disabled = !!route; // host 是键,改名=删旧建新
+  document.getElementById('r_to').value = (route && route.to) || '';
+  document.getElementById('r_ph').checked = !!(route && route.preserve_host);
+  // service 下拉(当前服务表)
+  const sel = document.getElementById('r_service');
+  sel.innerHTML = '<option value="">(无)</option>';
+  for (const s of currentList) {
+    const opt = document.createElement('option');
+    opt.value = s.name; opt.textContent = s.name;
+    if (route && route.service === s.name) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  document.getElementById('routeOverlay').style.display = 'flex';
+}
+function closeRouteForm() {
+  document.getElementById('routeOverlay').style.display = 'none';
+}
+async function submitRouteForm() {
+  const host = document.getElementById('r_host').value.trim().toLowerCase();
+  const to = document.getElementById('r_to').value.trim();
+  const service = document.getElementById('r_service').value;
+  const preserve_host = document.getElementById('r_ph').checked;
+  const err = document.getElementById('routeErr');
+  if (!host) { err.textContent = 'host 必填'; return; }
+  if (!to && !service) { err.textContent = 'to 与 service 二选一'; return; }
+  if (to && service) { err.textContent = 'to 与 service 只能配其一'; return; }
+  const body = { host, preserve_host };
+  if (to) body.to = to; else body.service = service;
+  const url = editingRoute
+    ? '/api/v1/proxy/routes/' + enc(editingRoute.host)
+    : '/api/v1/proxy/routes';
+  try {
+    const r = await fetch(url, {
+      method: editingRoute ? 'PUT' : 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      body: JSON.stringify(body),
+    });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(b.message || ('HTTP ' + r.status));
+    closeRouteForm();
+    showToast((editingRoute ? '路由已更新:' : '路由已创建:') + host + (b.engine === 'live' ? '' : '(引擎未运行,重启后生效)'));
+    loadProxy();
+  } catch (e) { err.textContent = '保存失败:' + e.message; }
+}
+async function deleteRoute(host) {
+  if (!confirm('确认删除路由「' + host + '」?')) return;
+  try {
+    const r = await fetch('/api/v1/proxy/routes/' + enc(host), { method: 'DELETE', headers: authHeaders() });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(b.message || ('HTTP ' + r.status));
+    showToast('路由已删除:' + host);
+    loadProxy();
+  } catch (e) { showToast('删除失败:' + e.message, true); }
+}
+
 // ── toast ────────────────────────────────────────────
 let toastTimer = null;
 function showToast(text, isErr) {
@@ -845,7 +1076,7 @@ function togglePause() {
 window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('tok').value = token;
   loadHealth(); loadServices();
-  svcTimer = setInterval(() => { loadHealth(); loadServices(); }, 2000);
+  svcTimer = setInterval(() => { loadHealth(); loadServices(); if (pxOpen) loadProxy(); }, 2000);
 });
 window.addEventListener('beforeunload', closeStream);
 </script>
