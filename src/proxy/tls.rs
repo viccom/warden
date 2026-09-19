@@ -149,6 +149,9 @@ pub fn spawn_tls_serve(
             .with_state(state);
         let mut conns: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
         loop {
+            // 回收已完成连接的条目:JoinSet 完成项须 join 才移除,不回收则随
+            // 累计连接数无界增长(常驻 daemon 内存缓慢上涨)。非阻塞,不影响 accept。
+            while conns.try_join_next().is_some() {}
             tokio::select! {
                 _ = shutdown.cancelled() => break,
                 accepted = listener.accept() => match accepted {
@@ -319,8 +322,12 @@ fn send_alert(webhook: &Option<String>, kind: &str, msg: &str) {
     });
 }
 
-/// 执行外部续期命令(unix: sh -c / windows: cmd /C),捕获输出、限时强杀。
+/// 执行外部续期命令(unix: sh -c / windows: cmd /C),捕获输出、超时终止。
 async fn run_renew_command(cmd: &str) -> Result<String, String> {
+    run_renew_command_timeout(cmd, RENEW_TIMEOUT).await
+}
+
+async fn run_renew_command_timeout(cmd: &str, timeout: Duration) -> Result<String, String> {
     let mut command = if cfg!(windows) {
         let mut c = tokio::process::Command::new("cmd");
         c.arg("/C").arg(cmd);
@@ -330,9 +337,11 @@ async fn run_renew_command(cmd: &str) -> Result<String, String> {
         c.arg("-c").arg(cmd);
         c
     };
-    let out = tokio::time::timeout(RENEW_TIMEOUT, command.output())
+    // 超时 drop output() future 时连带杀掉子进程(tokio 默认 drop 不杀!)
+    command.kill_on_drop(true);
+    let out = tokio::time::timeout(timeout, command.output())
         .await
-        .map_err(|_| format!("超时({RENEW_TIMEOUT:?})强杀"))?
+        .map_err(|_| format!("超时({timeout:?}),已终止子进程"))?
         .map_err(|e| format!("spawn/执行失败:{e}"))?;
     let text = format!(
         "exit={} stdout={} stderr={}",
@@ -402,6 +411,25 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("exit=3"), "exit 码上报:{err}");
         assert!(err.contains("boom"), "stderr 带回:{err}");
+    }
+
+    /// 意图(Y1):续期命令超时必须**终止子进程**——tokio 默认 drop Child 不杀
+    /// (kill_on_drop=false),挂死的续期脚本会残留且每小时再起一个。
+    /// 判别法:`sleep 1; touch marker` 配 150ms 超时——被杀则 marker 永不出现,
+    /// 泄漏则 ~1s 后出现。
+    #[tokio::test]
+    async fn renew_command_timeout_kills_child() {
+        let marker = std::env::temp_dir().join(format!("warden-renewkill-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let cmd = format!("sleep 1; touch {}", marker.to_string_lossy());
+        let r = run_renew_command_timeout(&cmd, Duration::from_millis(150)).await;
+        assert!(r.is_err(), "超时应报 Err:{r:?}");
+        // 等 shell 的 sleep 走完(若未被杀,marker 会在 ~1s 出现)
+        tokio::time::sleep(Duration::from_millis(1600)).await;
+        assert!(
+            !marker.exists(),
+            "超时后子进程须被终止,marker 不应出现(进程泄漏)"
+        );
     }
 
     /// 意图:热重载失败路径——证书对被写坏后 reload 报 Err 且**沿用旧配置**

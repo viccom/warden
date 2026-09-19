@@ -299,22 +299,31 @@ pub async fn metrics(
 /// 重新加载配置文件并增量同步(文件是唯一数据源):
 /// 新服务注册 / 消失的服务优雅停止后移除 / 同名服务配置替换(下次启动生效)。
 pub async fn reload(State(st): State<AppState>) -> WResult<impl IntoResponse> {
-    let cfg = config::Config::load(st.config_path.as_deref())?;
-    let count = cfg.services.len();
-    st.supervisor.apply_config(&cfg).await;
-    // [proxy] 段热同步(P5):显式路由/domain/preserve_host 免重启生效;
-    // 监听地址与证书路径的变更仍需重启(引擎 task 启动期绑定)。
-    #[cfg(feature = "reverse-proxy")]
-    if let Some(shared) = &st.proxy_shared {
-        match cfg.proxy.clone() {
-            Some(p) => {
-                *shared.write().expect("proxy 锁中毒") = std::sync::Arc::new(p);
-                tracing::info!("[proxy] 路由热更新已生效(监听/证书变更需重启)");
-            }
-            None => {
-                tracing::warn!("[proxy] 配置文件已移除 [proxy] 段,引擎沿用旧配置(彻底移除需重启)")
+    // 读文件 + proxy shared 回写须与路由 CRUD 互斥(config_edit_lock):否则
+    // reload 读到旧文件后,并发 CRUD 刚写入的 shared 会被旧内容覆盖回退。
+    // std Mutex guard 不能跨 await —— apply_config(含 await)移到锁外执行。
+    let cfg = {
+        let _edit = st.config_edit_lock.lock().unwrap();
+        let cfg = config::Config::load(st.config_path.as_deref())?;
+        // [proxy] 段热同步(P5):显式路由/domain/preserve_host 免重启生效;
+        // 监听地址与证书路径的变更仍需重启(引擎 task 启动期绑定)。
+        #[cfg(feature = "reverse-proxy")]
+        if let Some(shared) = &st.proxy_shared {
+            match cfg.proxy.clone() {
+                Some(p) => {
+                    *shared.write().expect("proxy 锁中毒") = std::sync::Arc::new(p);
+                    tracing::info!("[proxy] 路由热更新已生效(监听/证书变更需重启)");
+                }
+                None => {
+                    tracing::warn!(
+                        "[proxy] 配置文件已移除 [proxy] 段,引擎沿用旧配置(彻底移除需重启)"
+                    )
+                }
             }
         }
-    }
+        cfg
+    };
+    let count = cfg.services.len();
+    st.supervisor.apply_config(&cfg).await;
     Ok(Json(json!({ "status": "reloaded", "services": count })))
 }

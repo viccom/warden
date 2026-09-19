@@ -14,14 +14,21 @@ use crate::supervisor::Supervisor;
 
 /// 路由解析结果。
 pub enum Decision {
-    /// 显式路由命中(上游为直接 URI)。
-    Route { to: String, preserve_host: bool },
+    /// 显式路由命中(上游为直接 URI)。`pattern` = 命中的配置路由 host
+    /// (通配路由即 `*.x.com` 形态)——metrics 按它聚合,防通配子域键基数无界。
+    Route {
+        to: String,
+        preserve_host: bool,
+        pattern: String,
+    },
     /// 显式路由命中(上游引用被监护服务,转发层经 snapshot 解析 ui_url)。
     RouteService {
         service: String,
         preserve_host: bool,
+        pattern: String,
     },
     /// auto 路由命中(服务名;上游 = 该服务 ui_url,状态非 Running 由转发层 503)。
+    /// 键空间有界(标签 ∈ 服务表),metrics 直接用请求 host。
     AutoService { name: String },
     /// 全不中(调用方返回 421)。
     NotFound,
@@ -102,10 +109,12 @@ impl HostRouter {
                     (Some(to), None) => Decision::Route {
                         to: to.clone(),
                         preserve_host: preserve(r),
+                        pattern: r.host.clone(),
                     },
                     (None, Some(service)) => Decision::RouteService {
                         service: service.clone(),
                         preserve_host: preserve(r),
+                        pattern: r.host.clone(),
                     },
                     // to/service 二选一由配置校验保证;双双缺省/同时配置的坏项
                     // warn 但保留(校验哲学),此处兜底为 NotFound 不致误转发
@@ -138,10 +147,12 @@ impl HostRouter {
                 (Some(to), None) => Decision::Route {
                     to: to.clone(),
                     preserve_host: preserve(r),
+                    pattern: r.host.clone(),
                 },
                 (None, Some(service)) => Decision::RouteService {
                     service: service.clone(),
                     preserve_host: preserve(r),
+                    pattern: r.host.clone(),
                 },
                 _ => Decision::NotFound,
             },

@@ -458,6 +458,66 @@ async fn route_update_takes_effect_on_live_traffic() {
     shutdown.cancel();
 }
 
+/// 意图(Y4):通配路由的 metrics 必须聚合到**配置的路由模式**键下——
+/// 键 = 请求 host 会让 `*.x.com` 下任意子域各成一键(键基数无界,
+/// 扫描流量可撑大内存);聚合后每通配路由恰好一行。
+#[tokio::test]
+async fn metrics_aggregate_wildcard_under_route_pattern() {
+    let up = spawn_upstream("ok").await;
+    let cfg = warden::config::ProxyConfig {
+        domain: Some("x.example.com".into()),
+        http_bind: Some("127.0.0.1:0".into()),
+        https_bind: None,
+        connect_timeout_ms: 500,
+        preserve_host: false,
+        cert_file: None,
+        key_file: None,
+        upstream_ca_file: None,
+        acme: Default::default(),
+        routes: vec![warden::config::ProxyRoute {
+            host: "*.x.example.com".into(),
+            to: Some(format!("http://{up}")),
+            service: None,
+            preserve_host: None,
+        }],
+    };
+    let metrics = Arc::new(ProxyMetrics::new());
+    let state = Arc::new(ProxyState {
+        router: HostRouter::new(
+            shared_from(cfg.clone()),
+            Arc::new(Supervisor::new(PathBuf::from(""))),
+        ),
+        client: warden::proxy::build_client(&cfg),
+        scheme: "http",
+        metrics: metrics.clone(),
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    warden::proxy::spawn_http(
+        listener,
+        warden::proxy::HttpEntry::Forward(state),
+        shutdown.clone(),
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    for sub in ["a", "b", "c"] {
+        let resp = reqwest::Client::new()
+            .get(format!("http://{addr}/"))
+            .header("host", format!("{sub}.x.example.com"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "{sub} 子域经通配路由应 200");
+    }
+
+    let snap = metrics.snapshot();
+    assert_eq!(snap.len(), 1, "三个子域须聚合成一行,实际:{snap:?}");
+    assert_eq!(snap[0].0, "*.x.example.com", "键 = 路由模式");
+    assert_eq!(snap[0].1, 3, "3 次请求");
+    shutdown.cancel();
+}
+
 async fn spawn_upstream(body: &'static str) -> std::net::SocketAddr {
     let app = Router::new().route("/", get(move || async move { body }));
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

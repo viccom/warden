@@ -138,15 +138,28 @@ pub async fn proxy_handler(
         return error_page(StatusCode::BAD_REQUEST, &host, "请求缺少 Host 头");
     }
     let decision = state.router.resolve(&host);
-    // 已路由请求才计入 metrics(键 = 规范化 host;421/坏 Host 不计,防键空间攻击)
-    if !matches!(decision, Decision::NotFound) {
-        log.route = Some(crate::proxy::router::HostRouter::normalize_host(&host));
-    }
+    // 已路由请求才计入 metrics(421/坏 Host 不计)。键 = 命中的路由模式:
+    // 显式路由用配置 host(通配 `*.x.com` 下所有子域聚合一键,防键基数无界),
+    // auto 用请求 host(标签 ∈ 服务表,天然有界)。
+    log.route = match &decision {
+        Decision::Route { pattern, .. } | Decision::RouteService { pattern, .. } => {
+            Some(pattern.clone())
+        }
+        Decision::AutoService { .. } => {
+            Some(crate::proxy::router::HostRouter::normalize_host(&host))
+        }
+        Decision::NotFound => None,
+    };
     let (upstream, preserve_host, svc) = match decision {
-        Decision::Route { to, preserve_host } => (to, preserve_host, None),
+        Decision::Route {
+            to,
+            preserve_host,
+            pattern: _,
+        } => (to, preserve_host, None),
         Decision::RouteService {
             service,
             preserve_host,
+            pattern: _,
         } => (String::new(), preserve_host, Some(service)),
         Decision::AutoService { name } => (
             String::new(),
