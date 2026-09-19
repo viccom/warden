@@ -185,7 +185,163 @@ pub async fn proxy_handler(
         },
         None => upstream,
     };
+    // WebSocket 升级请求走专用隧道(不经通用转发:握手头须透传,双向复制)
+    if is_websocket_upgrade(req.headers()) {
+        return websocket_tunnel(&state, req, &client, &upstream, preserve_host, &log).await;
+    }
     forward_to(&state, req, &client, &upstream, preserve_host, &log).await
+}
+
+/// WebSocket 升级检测:Upgrade 头为 websocket(大小写不敏感)且
+/// Connection 含 upgrade 令牌(RFC 6455 握手形态)。
+fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
+    let up = headers
+        .get("upgrade")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+    let conn = headers
+        .get("connection")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("upgrade"));
+    up && conn
+}
+
+/// WebSocket 隧道(设计 §4.4):上游 101 后取两侧升级流,
+/// `copy_bidirectional` 双向复制;隧道无超时,shutdown 时随 drain 上限强关。
+async fn websocket_tunnel(
+    state: &ProxyState,
+    req: Request<axum::body::Body>,
+    client: &SocketAddr,
+    upstream: &str,
+    preserve_host: bool,
+    log: &ReqLog,
+) -> Response<axum::body::Body> {
+    use hyper::upgrade::OnUpgrade;
+    use hyper_util::rt::TokioIo;
+
+    let uri = match build_upstream_uri(upstream, req.uri().path_and_query()) {
+        Ok(u) => u,
+        Err(e) => {
+            let detail = format!("上游 URI 非法({upstream}):{e}");
+            log.emit(StatusCode::BAD_GATEWAY, upstream);
+            return error_page(StatusCode::BAD_GATEWAY, &log.host, &detail);
+        }
+    };
+    let Some(authority) = uri.authority().map(|a| a.as_str().to_owned()) else {
+        let detail = format!("上游 URI 缺少 authority:{upstream}");
+        log.emit(StatusCode::BAD_GATEWAY, upstream);
+        return error_page(StatusCode::BAD_GATEWAY, &log.host, &detail);
+    };
+    let (mut parts, body) = req.into_parts();
+    // 客户端侧升级句柄:hyper server 塞在握手请求的 extensions 里
+    let on_client = parts.extensions.remove::<OnUpgrade>();
+    // 握手语义须透传上游:常规重写(剥全部 hop-by-hop)后补回升级头
+    let saved_upgrade = parts.headers.get("upgrade").cloned();
+    rewrite_headers(
+        &mut parts.headers,
+        &client.ip().to_string(),
+        &authority,
+        state.scheme,
+        preserve_host,
+    );
+    if let Some(up) = saved_upgrade {
+        parts.headers.insert("upgrade", up);
+        parts
+            .headers
+            .insert("connection", HeaderValue::from_static("Upgrade"));
+    }
+    let mut builder = Request::builder().method(parts.method.clone()).uri(uri);
+    for (k, v) in &parts.headers {
+        builder = builder.header(k, v);
+    }
+    let upstream_req = match builder.body(body) {
+        Ok(r) => r,
+        Err(e) => {
+            let detail = format!("构造上游升级请求失败:{e}");
+            log.emit(StatusCode::BAD_GATEWAY, upstream);
+            return error_page(StatusCode::BAD_GATEWAY, &log.host, &detail);
+        }
+    };
+    // hyper client 收到 101 时连接退出连接池,升级句柄在 response extensions
+    match state.client.request(upstream_req).await {
+        Ok(mut resp) if resp.status() == StatusCode::SWITCHING_PROTOCOLS => {
+            let on_upstream = resp.extensions_mut().remove::<OnUpgrade>();
+            let status = resp.status();
+            let (up_parts, _) = resp.into_parts();
+            let mut builder = Response::builder().status(status);
+            for (k, v) in up_parts.headers.iter() {
+                // 101 响应的 connection/upgrade 保留(客户端握手依赖),其余照剥
+                let n = k.as_str();
+                let keep =
+                    n.eq_ignore_ascii_case("connection") || n.eq_ignore_ascii_case("upgrade");
+                if !keep && is_hop_by_hop(n) {
+                    continue;
+                }
+                builder = builder.header(k, v);
+            }
+            log.emit(status, upstream);
+            let resp = match builder.body(axum::body::Body::empty()) {
+                Ok(r) => r,
+                Err(e) => {
+                    return error_page(
+                        StatusCode::BAD_GATEWAY,
+                        &log.host,
+                        &format!("构造 101 响应失败:{e}"),
+                    )
+                }
+            };
+            match (on_client, on_upstream) {
+                (Some(c), Some(u)) => {
+                    tokio::spawn(async move {
+                        // 两侧升级流在 101 响应返回后 ready;TokioIo 把
+                        // hyper 的 Read/Write 适配为 tokio AsyncRead/Write
+                        match tokio::join!(c, u) {
+                            (Ok(cl), Ok(up)) => {
+                                let mut cl = TokioIo::new(cl);
+                                let mut up = TokioIo::new(up);
+                                if let Err(e) =
+                                    tokio::io::copy_bidirectional(&mut cl, &mut up).await
+                                {
+                                    tracing::debug!("[proxy] ws 隧道关闭:{e}");
+                                }
+                            }
+                            _ => tracing::debug!("[proxy] ws 隧道升级失败(一侧未就绪)"),
+                        }
+                    });
+                }
+                _ => {
+                    tracing::warn!("[proxy] ws 101 但缺少升级句柄,隧道未建立(client 侧/上游侧)")
+                }
+            }
+            resp
+        }
+        // 上游拒绝升级(非 101):按普通响应透传(走通用头过滤)
+        Ok(resp) => {
+            let status = resp.status();
+            let (up_parts, up_body) = resp.into_parts();
+            let mut builder = Response::builder().status(status);
+            for (k, v) in up_parts.headers.iter() {
+                if is_hop_by_hop(k.as_str()) {
+                    continue;
+                }
+                builder = builder.header(k, v);
+            }
+            log.emit(status, upstream);
+            match builder.body(axum::body::Body::new(up_body)) {
+                Ok(r) => r,
+                Err(e) => error_page(
+                    StatusCode::BAD_GATEWAY,
+                    &log.host,
+                    &format!("构造响应失败:{e}"),
+                ),
+            }
+        }
+        Err(e) => {
+            let detail = format!("上游连接失败({upstream}):{e}");
+            log.emit(StatusCode::BAD_GATEWAY, upstream);
+            error_page(StatusCode::BAD_GATEWAY, &log.host, &detail)
+        }
+    }
 }
 
 /// 解析并转发到上游 URI(to 可带 path 前缀,与请求 path 拼接)。

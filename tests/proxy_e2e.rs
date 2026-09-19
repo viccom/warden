@@ -363,3 +363,84 @@ async fn upstream_receives_forwarded_headers() {
     assert!(v["connection"].is_null(), "Connection 应被剥:{v}");
     assert!(v["x-custom"].is_null(), "Connection 令牌头应被剥:{v}");
 }
+
+// ── Task 11:WebSocket 隧道 ─────────────────────────────────────
+
+/// WS 回显上游:收一条回一条;连接关闭时置 AtomicBool(断开传播断言用)。
+/// 注:oneshot::Sender 会让 axum Handler 对捕获闭包的推断失败(rustc 推断
+/// 怪癖,String/Arc<AtomicBool> 均正常),故断开信号用共享原子标志。
+async fn ws_echo_upstream(closed: Arc<std::sync::atomic::AtomicBool>) -> SocketAddr {
+    use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+    use std::sync::atomic::Ordering;
+
+    async fn handle_socket(mut socket: WebSocket, closed: Arc<std::sync::atomic::AtomicBool>) {
+        while let Some(Ok(msg)) = socket.recv().await {
+            // 只回显文本/二进制(ping/pong/close 由协议层处理)
+            if matches!(msg, Message::Text(_) | Message::Binary(_)) {
+                let _ = socket.send(msg).await;
+            }
+        }
+        closed.store(true, Ordering::SeqCst);
+    }
+
+    let c = closed.clone();
+    let app = Router::new().route(
+        "/ws",
+        get(move |ws: WebSocketUpgrade| async move {
+            ws.on_upgrade(move |socket| handle_socket(socket, c))
+        }),
+    );
+    spawn_upstream(app).await
+}
+
+/// 意图:WebSocket 经代理握手、双向消息、断开传播到上游
+/// (hyper::upgrade 隧道 + copy_bidirectional)。
+#[tokio::test]
+async fn proxies_websocket_echo() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let up = ws_echo_upstream(Arc::clone(&closed)).await;
+    let proxy_addr = spawn_proxy(vec![route("fs.opc.dongx.site", format!("http://{up}"))]).await;
+
+    // 直连代理地址但 Host 路由头指向 fs.opc.dongx.site
+    let mut req = format!("ws://{proxy_addr}/ws")
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("host", "fs.opc.dongx.site".parse().unwrap());
+    let (mut ws, resp) = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio_tungstenite::connect_async(req),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(resp.status(), 101, "握手应经代理透传成功");
+
+    for payload in ["hello", "world"] {
+        ws.send(Message::Text(payload.into())).await.unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.into_text().unwrap(), payload, "回显应一致");
+    }
+
+    // 断开传播:客户端 drop → 上游连接关闭 → 标志置位(5s 内轮询)
+    drop(ws);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if closed.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        closed.load(std::sync::atomic::Ordering::SeqCst),
+        "客户端断开应传播到上游"
+    );
+}
