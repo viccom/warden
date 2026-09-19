@@ -395,9 +395,12 @@ mod tests {
     /// 意图:续期命令成功路径——sh -c 执行、stdout/stderr 捕获、exit=0。
     #[tokio::test]
     async fn renew_command_success_captures_output() {
-        let out = run_renew_command("echo renew-ok; echo warn-line >&2")
-            .await
-            .unwrap();
+        // sh 用 ';' 分隔;cmd 不认 ';'(会整串回显),须用 '&' + 1>&2
+        #[cfg(unix)]
+        let cmd = "echo renew-ok; echo warn-line >&2";
+        #[cfg(windows)]
+        let cmd = "echo renew-ok & echo warn-line 1>&2";
+        let out = run_renew_command(cmd).await.unwrap();
         assert!(out.contains("exit=0"), "exit 码捕获:{out}");
         assert!(out.contains("renew-ok"), "stdout 捕获:{out}");
         assert!(out.contains("warn-line"), "stderr 捕获:{out}");
@@ -406,9 +409,12 @@ mod tests {
     /// 意图:续期命令失败路径——非零 exit 报 Err,内容含 exit 码与 stderr。
     #[tokio::test]
     async fn renew_command_failure_reports_exit_code() {
-        let err = run_renew_command("echo boom >&2; exit 3")
-            .await
-            .unwrap_err();
+        #[cfg(unix)]
+        let cmd = "echo boom >&2; exit 3";
+        // cmd:'&' 分隔 + exit /b 设置 errorlevel(';' 会被 echo 整体回显)
+        #[cfg(windows)]
+        let cmd = "echo boom 1>&2 & exit /b 3";
+        let err = run_renew_command(cmd).await.unwrap_err();
         assert!(err.contains("exit=3"), "exit 码上报:{err}");
         assert!(err.contains("boom"), "stderr 带回:{err}");
     }
@@ -421,7 +427,15 @@ mod tests {
     async fn renew_command_timeout_kills_child() {
         let marker = std::env::temp_dir().join(format!("warden-renewkill-{}", std::process::id()));
         let _ = std::fs::remove_file(&marker);
+        // 命令:延时 ~1s 后落 marker。unix 用 sleep/touch;windows 用 ping 延时
+        // (cmd 无 sleep)+ type nul 建文件
+        #[cfg(unix)]
         let cmd = format!("sleep 1; touch {}", marker.to_string_lossy());
+        #[cfg(windows)]
+        let cmd = format!(
+            "ping -n 2 127.0.0.1 >nul & type nul > \"{}\"",
+            marker.to_string_lossy()
+        );
         let r = run_renew_command_timeout(&cmd, Duration::from_millis(150)).await;
         assert!(r.is_err(), "超时应报 Err:{r:?}");
         // 等 shell 的 sleep 走完(若未被杀,marker 会在 ~1s 出现)
