@@ -234,6 +234,11 @@ pub fn cert_expiry_days(cert_path: &Path) -> Result<i64, String> {
     Ok(secs.div_euclid(86_400))
 }
 
+/// 剩余天数是否触发告警(阈值含等于不告警;过期负数必然触发)。
+fn expiry_should_warn(days: i64, warn_days: u32) -> bool {
+    days < warn_days as i64
+}
+
 /// 证书到期检测 task(P3):周期解析 notAfter;剩余 < expire_warn_days 时
 /// 告警(tracing warn + 可选 webhook,对齐 health 告警形态),并在配置了
 /// renew_command 时触发外部续期(冷却 24h,超时强杀)。
@@ -258,7 +263,7 @@ pub fn spawn_cert_expiry(
                         }
                     };
                     tracing::info!("[proxy] 证书剩余 {days} 天({})", cert_path.display());
-                    if days >= acme.expire_warn_days as i64 {
+                    if !expiry_should_warn(days, acme.expire_warn_days) {
                         continue;
                     }
                     // 到期告警(每次检测都发:剩余天数递减,webhook 侧按文案去重)
@@ -365,6 +370,68 @@ mod tests {
         let p = dir.join("c.pem");
         std::fs::write(&p, cert.pem()).unwrap();
         assert_eq!(cert_expiry_days(&p).unwrap(), 90, "90 天 + 1 小时 → 90");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 意图:阈值边界——剩余恰等于阈值不告警(21 天健康,20 天告警),
+    /// 负数(已过期)必然告警。
+    #[test]
+    fn expiry_threshold_boundary() {
+        assert!(!expiry_should_warn(21, 21), "剩余=阈值 → 健康");
+        assert!(expiry_should_warn(20, 21), "剩余=阈值-1 → 告警");
+        assert!(expiry_should_warn(0, 21), "当天到期 → 告警");
+        assert!(expiry_should_warn(-3, 21), "已过期 → 告警");
+    }
+
+    /// 意图:续期命令成功路径——sh -c 执行、stdout/stderr 捕获、exit=0。
+    #[tokio::test]
+    async fn renew_command_success_captures_output() {
+        let out = run_renew_command("echo renew-ok; echo warn-line >&2")
+            .await
+            .unwrap();
+        assert!(out.contains("exit=0"), "exit 码捕获:{out}");
+        assert!(out.contains("renew-ok"), "stdout 捕获:{out}");
+        assert!(out.contains("warn-line"), "stderr 捕获:{out}");
+    }
+
+    /// 意图:续期命令失败路径——非零 exit 报 Err,内容含 exit 码与 stderr。
+    #[tokio::test]
+    async fn renew_command_failure_reports_exit_code() {
+        let err = run_renew_command("echo boom >&2; exit 3")
+            .await
+            .unwrap_err();
+        assert!(err.contains("exit=3"), "exit 码上报:{err}");
+        assert!(err.contains("boom"), "stderr 带回:{err}");
+    }
+
+    /// 意图:热重载失败路径——证书对被写坏后 reload 报 Err 且**沿用旧配置**
+    /// (acceptor 不变,服务不中断);这是换证竞态半个新配对的兜底行为。
+    #[test]
+    fn reload_failure_keeps_old_config() {
+        let ck = rcgen::generate_simple_self_signed(vec!["*.x.example.com".to_string()]).unwrap();
+        let dir = std::env::temp_dir().join(format!("warden-reloadfail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cert = dir.join("fullchain.pem");
+        let key = dir.join("privkey.pem");
+        std::fs::write(&cert, ck.cert.pem()).unwrap();
+        std::fs::write(&key, ck.signing_key.serialize_pem()).unwrap();
+
+        let reloader = CertReloader::new(&cert, &key).unwrap();
+        // 未变化 → Ok(false)
+        assert!(!reloader.reload_if_changed().unwrap());
+
+        // 写坏证书(PEM 非法)并显式拨动 mtime——同 tick 内重写 mtime 可能不变
+        // (tmpfs 时钟粒度),set_modified 模拟"时间已过"确保变化被检测
+        std::fs::write(&cert, "not a pem at all").unwrap();
+        let f = std::fs::File::options().write(true).open(&cert).unwrap();
+        f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(1))
+            .unwrap();
+        let r = reloader.reload_if_changed();
+        assert!(r.is_err(), "坏证书对须报错:{r:?}");
+        // acceptor 仍可构建(旧配置未被破坏)
+        let _acceptor = reloader.acceptor();
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -39,9 +39,23 @@ async fn hit(
     uri: &str,
     body: Option<serde_json::Value>,
 ) -> axum::http::Response<axum::body::Body> {
+    hit_auth(state, method, uri, body, None).await
+}
+
+async fn hit_auth(
+    state: &AppState,
+    method: &str,
+    uri: &str,
+    body: Option<serde_json::Value>,
+    token: Option<&str>,
+) -> axum::http::Response<axum::body::Body> {
     use axum::body::Body;
     use axum::http::Request;
     let b = Request::builder().method(method).uri(uri);
+    let b = match token {
+        Some(t) => b.header("authorization", format!("Bearer {t}")),
+        None => b,
+    };
     let req = match body {
         Some(v) => b
             .header("content-type", "application/json")
@@ -344,6 +358,103 @@ async fn engine_metrics_record_routed_requests() {
         !snap.iter().any(|(h, _, _)| h.contains("unknown")),
         "未路由请求不计数"
     );
+    shutdown.cancel();
+}
+
+/// 意图:反代管理端点与其他 /api/v1/* 同受 token 鉴权——无 token 401,
+/// 带 token 放行(公网暴露管理面时的第一道防线)。
+#[tokio::test]
+async fn proxy_endpoints_require_auth_when_token_set() {
+    // setup 自带 [daemon] 段,鉴权用例需要 auth_token → 独立落盘
+    let d = std::env::temp_dir().join(format!("warden-pxadmin-auth-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let cfg_path = d.join("services.toml");
+    std::fs::write(
+        &cfg_path,
+        "[daemon]\nauth_token = \"t-123\"\ndata_dir = \"\"\nlog_dir = \"\"\n\n[proxy]\ndomain = \"x.example.com\"\nhttp_bind = \"127.0.0.1:0\"\n",
+    )
+    .unwrap();
+    let cfg = Config::load(Some(&cfg_path)).unwrap();
+    let state = build_state(cfg, Some(cfg_path));
+    let resp = hit_auth(&state, "GET", "/api/v1/proxy", None, None).await;
+    assert_eq!(resp.status(), 401, "无 token 应 401");
+    let resp = hit_auth(
+        &state,
+        "POST",
+        "/api/v1/proxy/routes",
+        Some(route_json("a.x.example.com", "http://1")),
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), 401, "写端点无 token 同样 401");
+    let resp = hit_auth(&state, "GET", "/api/v1/proxy", None, Some("t-123")).await;
+    assert_eq!(resp.status(), 200, "正确 token 放行");
+    let resp = hit_auth(&state, "GET", "/api/v1/proxy", None, Some("wrong")).await;
+    assert_eq!(resp.status(), 401, "错误 token 拒绝");
+}
+
+/// 意图:CRUD 热生效的"活请求"级验证——引擎持 shared 运行中,PUT 换上游后
+/// 下一个请求即路由到新上游(免重启;此前只有配置对象级断言)。
+#[tokio::test]
+async fn route_update_takes_effect_on_live_traffic() {
+    let (state, _path) = setup("hotlive", BASE_PROXY);
+    let up_a = spawn_upstream("from-A").await;
+    let up_b = spawn_upstream("from-B").await;
+
+    // 建路由 → A
+    let resp = hit(
+        &state,
+        "POST",
+        "/api/v1/proxy/routes",
+        Some(route_json("hot.x.example.com", &format!("http://{up_a}"))),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+
+    // 起"活"引擎:与 AppState 共用 shared 与 supervisor
+    let shared = state.proxy_shared.clone().expect("[proxy] 存在");
+    let cfg = shared.read().unwrap().clone();
+    let engine = Arc::new(ProxyState {
+        router: HostRouter::new(shared, state.supervisor.clone()),
+        client: warden::proxy::build_client(&cfg),
+        scheme: "http",
+        metrics: Arc::new(ProxyMetrics::new()),
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    warden::proxy::spawn_http(
+        listener,
+        warden::proxy::HttpEntry::Forward(engine),
+        shutdown.clone(),
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let get = || async {
+        reqwest::Client::new()
+            .get(format!("http://{addr}/"))
+            .header("host", "hot.x.example.com")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+    };
+    assert_eq!(get().await, "from-A", "初始路由到上游 A");
+
+    // PUT 换上游 → B;不重启,下一请求即 B
+    let resp = hit(
+        &state,
+        "PUT",
+        "/api/v1/proxy/routes/hot.x.example.com",
+        Some(route_json("hot.x.example.com", &format!("http://{up_b}"))),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(get().await, "from-B", "PUT 后活流量切到新上游(免重启)");
+
     shutdown.cancel();
 }
 

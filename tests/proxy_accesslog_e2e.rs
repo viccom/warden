@@ -37,7 +37,14 @@ async fn access_log_written_to_rotating_file() {
 
     let api_port = free_port();
     let px_port = free_port();
+    let tls_port = free_port();
     let cfg_path = d.join("services.toml");
+    // 自签通配证书(CertReloader 只消费 PEM,自签即可)
+    let ck = rcgen::generate_simple_self_signed(vec!["*.x.example.com".to_string()]).unwrap();
+    let cert_path = d.join("fullchain.pem");
+    let key_path = d.join("privkey.pem");
+    std::fs::write(&cert_path, ck.cert.pem()).unwrap();
+    std::fs::write(&key_path, ck.signing_key.serialize_pem()).unwrap();
     std::fs::write(
         &cfg_path,
         format!(
@@ -45,17 +52,22 @@ async fn access_log_written_to_rotating_file() {
 api_bind = "127.0.0.1:{api_port}"
 auth_token = ""
 data_dir = ""
-log_dir = "{}"
+log_dir = "{logs}"
 
 [proxy]
 domain = "x.example.com"
 http_bind = "127.0.0.1:{px_port}"
+https_bind = "127.0.0.1:{tls_port}"
+cert_file = "{cert}"
+key_file = "{key}"
 
 [[proxy.route]]
 host = "fs.x.example.com"
 to = "http://{up}"
 "#,
-            d.join("logs").to_string_lossy().replace('\\', "/")
+            logs = d.join("logs").to_string_lossy().replace('\\', "/"),
+            cert = cert_path.to_string_lossy().replace('\\', "/"),
+            key = key_path.to_string_lossy().replace('\\', "/"),
         ),
     )
     .unwrap();
@@ -68,25 +80,30 @@ to = "http://{up}"
             async move { warden::run_app_with_shutdown(cfg, Some(cfg_path), cancel).await },
         );
 
-    // 就绪 + 打两次请求
+    // 就绪:http 入口应 301(https 同配时全量重定向)
     let url = format!("http://127.0.0.1:{px_port}/");
-    let mut ok = false;
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let mut redirected = false;
     for _ in 0..50 {
-        if let Ok(r) = reqwest::Client::new()
+        if let Ok(r) = no_redirect
             .get(&url)
             .header("host", "fs.x.example.com")
             .send()
             .await
         {
-            if r.status() == 200 {
-                ok = true;
+            if r.status() == 301 {
+                redirected = true;
                 break;
             }
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(ok, "代理请求应 200");
-    let _ = reqwest::Client::new()
+    assert!(redirected, "http 入口应 301 → https");
+    // 再打一次(累计两行 301)
+    let _ = no_redirect
         .get(&url)
         .header("host", "fs.x.example.com")
         .send()
@@ -110,7 +127,7 @@ to = "http://{up}"
             .collect();
         if let Some(f) = entries.first() {
             let text = std::fs::read_to_string(f.path()).unwrap();
-            let hits = text.matches("GET fs.x.example.com/").count();
+            let hits = text.matches("GET fs.x.example.com/ 301").count();
             if hits >= 2 {
                 found = true;
                 break;
@@ -118,6 +135,9 @@ to = "http://{up}"
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(found, "proxy-access.log 应含 2 条 GET fs.x.example.com/ 行");
+    assert!(
+        found,
+        "proxy-access.log 应含 2 条 GET fs.x.example.com/ 301 行(重定向流量也须落 access log)"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }

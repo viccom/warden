@@ -214,12 +214,23 @@ pub async fn redirect_to_https(
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default()
         .to_owned();
+    // 重定向流量同样落 access log(upstream 标记目标 https 入口;不进 metrics
+    // ——未走路由解析,无路由键)
+    let log = ReqLog {
+        method: req.method().clone(),
+        host: host_hdr.clone(),
+        path: req.uri().path().to_owned(),
+        started: std::time::Instant::now(),
+        route: None,
+        metrics: None,
+    };
     let host = crate::proxy::router::HostRouter::normalize_host(&host_hdr);
     if host.is_empty()
         || !host
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
     {
+        log.emit(StatusCode::BAD_REQUEST, "-");
         return error_page(StatusCode::BAD_REQUEST, &host_hdr, "请求 Host 头非法");
     }
     let pq = req
@@ -233,17 +244,24 @@ pub async fn redirect_to_https(
         format!("{host}:{port}")
     };
     let location = format!("https://{authority}{pq}");
+    let target = format!("https:{port}");
     match Response::builder()
         .status(StatusCode::MOVED_PERMANENTLY)
         .header("location", &location)
         .body(axum::body::Body::empty())
     {
-        Ok(resp) => resp,
-        Err(e) => error_page(
-            StatusCode::BAD_REQUEST,
-            &host_hdr,
-            &format!("构造重定向失败:{e}"),
-        ),
+        Ok(resp) => {
+            log.emit(StatusCode::MOVED_PERMANENTLY, &target);
+            resp
+        }
+        Err(e) => {
+            log.emit(StatusCode::BAD_REQUEST, &target);
+            error_page(
+                StatusCode::BAD_REQUEST,
+                &host_hdr,
+                &format!("构造重定向失败:{e}"),
+            )
+        }
     }
 }
 
