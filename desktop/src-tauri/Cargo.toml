@@ -20,8 +20,9 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# 复用 CLI 版监护引擎/HTTP API(与本 crate 同仓库)
-warden = { path = "../.." }
+# 复用 CLI 版监护引擎/HTTP API(与本 crate 同仓库)。
+# default-features = false:桌面内嵌 daemon 不编译反代引擎(不占桌面机 80/443,D6)
+warden = { path = "../..", default-features = false }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }

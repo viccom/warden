@@ -2,8 +2,8 @@
 
 > **跨会话接续入口**:新会话先读本文件的「当前进度」,再按需查 [`DESIGN.md`](./DESIGN.md) 对应章节,然后从下一个 `[ ]` 步骤继续。每完成一步把 `[ ]` 改 `[x]` 并更新「最后更新」日期,必要时写「变更日志」。
 
-- **最后更新**:2026-09-18
-- **当前阶段**:Phase 6 反向代理 P0 骨架完成(feature 段 + [proxy]/ServiceConfig 字段无条件解析 + feature off warn;引擎待 P1)。测试 112 通过(feature ON)/ 115 通过(feature OFF)+ 双形态 clippy/fmt clean;另有开工前的 metrics 采样顺序既有修复
+- **最后更新**:2026-09-19
+- **当前阶段**:Phase 6 反向代理 P0+P1 完成(HTTP 反代 MVP:Host 路由 + 流式直传 + WS 隧道 + 421/503;TLS/证书检测属 P2/P3)。测试双形态全绿(ON 146/OFF 118)+ fmt/clippy 双形态 clean;CI 加 no-default-features 回归步骤,desktop 退 default-features=false
 - **下一步**:桌面版 P2(metrics 图表/系统通知/自动发现)或自升级(取舍讨论见 RESEARCH-SELF-UPDATE.md)或 Phase 2 剩余(systemd 实测)
 
 ---
@@ -105,7 +105,7 @@
 > 设计见 [PLAN-REVERSE-PROXY.md](./PLAN-REVERSE-PROXY.md);P0+P1 实施计划见 [PLAN-REVERSE-PROXY-P0P1.md](./PLAN-REVERSE-PROXY-P0P1.md)。
 
 - [x] **P0 骨架 ✅(2026-09-18)**:reverse-proxy feature 段 + `[proxy]` 段解析/校验 + `ServiceConfig.{proxy,subdomain}` + feature off warn。配置层无条件解析(双 feature 一致),引擎空壳待 P1。
-- [ ] P1 HTTP 反代 MVP(host 路由 + hyper-util 流式直传 + WebSocket + 421/503)
+- [x] **P1 HTTP 反代 MVP ✅(2026-09-19)**:HostRouter(精确/通配单层/auto 经 Supervisor 快照)+ hyper-util legacy client 流式直传(请求 body 原样透传零重组、响应 CL/TE 不手抄)+ WebSocket 隧道(OnUpgrade×2 + copy_bidirectional)+ 421/502/503(含状态文案)错误页(HTML 转义防注入)+ access log;`serve_with_shutdown` 集成(proxy drain 15s 独立于 API 5s,总退出 = max 两链);e2e 12 用例(body/SSE 非缓冲/8MiB 哈希/421/502/503/auto subdomain/显式胜 auto/通配单层/头透传/恶意 Host 转义/WS 握手-回显-断开传播)。含两轮深度审查修复(subdomain 小写化存储、host/domain 格式校验、drain 截断、XSS、access log)。
 - [ ] P2 TLS 终止(单张通配证书 + mtime 热重载)
 - [ ] P3 证书到期检测(1Panel 外部托管协同)
 
@@ -151,3 +151,4 @@
 - **2026-08-24(RestartPolicy 支持部分覆盖 ✅)**:自升级 e2e 实测暴露——example 注释推荐的 dotted-key 写法(`restart.mode = "unexpected"` 单独两行)解析失败 `missing field max_retries`,5 个退避字段无 serde(default),用户必须写全 7 字段 inline table。修复:5 字段补 `#[serde(default = ...)]`(与 `Default` impl 同值 3/1000/60000/2.0/60),RestartPolicy derive 加 PartialEq(测试断言用);dotted-key 部分覆盖/空表/混合写法均可解析,未写字段取默认。回归测试 `restart_policy_partial_override_parses`(3 场景);真实 exe 实跑验证 dotted-key 配置启动且 API 透出 restart_mode=unexpected 正确。测试 95→96 全绿 + clippy/fmt clean。背景:配合 rs-selfupdater/go-selfupdater 子进程自升级场景(两库已修复 Windows 交班时序,e2e 详见各仓库)。
 - **2026-09-18(metrics 采样顺序既有修复 ✅)**:反向代理开工前基线验证发现 `metrics_sampled_for_running_process` 稳定失败——本机实测 netstat2 全表采集 ~850ms,metrics 循环原顺序(端口采集后采样)使首轮采样落在 ~1.2s,超出 e2e 的 800ms 断言窗口。修复:`spawn_metrics` 循环拆两遍,先采样 CPU/内存(task 主职责)后刷新监听端口,metrics 新鲜度与 netlink 耗时解耦。
 - **2026-09-18(Phase 6 P0 ✅)**:反向代理功能启动。P0 骨架——reverse-proxy Cargo feature(默认开,desktop 退 default-features=false 留 P1);`[proxy]` 段(domain/http_bind/https_bind/connect_timeout_ms/preserve_host/routes)与 `ServiceConfig.{proxy,subdomain}` 无条件解析,校验与既有 validate 同风格(坏项 warn 不致命:to/service 二选一、host 小写化禁 path、通配仅 `*.<domain>` 单层、重复 host、binds 均空、service 引用、proxy=true 缺 ui_url、subdomain 标签 [a-z0-9]+);feature off + 配置存在 → 启动 warn 忽略(`should_warn_proxy_ignored` 纯函数 + e2e 双向断言)。**双形态验证口径修正**:default 含 feature(D6),feature OFF 形态为 `--no-default-features`(计划原文的 `--features reverse-proxy` 与 default 等价)。测试 112(ON)/ 115(OFF)全绿 + 双形态 clippy/fmt clean。引擎空壳,P1 起实现。决策 D1–D13 见 PLAN-REVERSE-PROXY.md。
+- **2026-09-19(Phase 6 P1 ✅)**:HTTP 反代 MVP 完成。引擎(`src/proxy/`,hyper-util legacy client 流式直传 D5):HostRouter 精确>通配单层最长后缀>auto(经 Supervisor 快照查 proxy=true 服务,缺省标签 name 小写);转发头处理(Connection 令牌连带剥 + X-Forwarded-* 追加);服务引用/auto 路由停止 503(含状态文案)/缺 ui_url 502/不存在 404/未知 Host 421;WebSocket 隧道(握手头透传 + OnUpgrade×2 + `copy_bidirectional`,无超时,随 drain 15s 强关);`serve_with_shutdown` 集成——绑定失败降级不拖死监护,proxy drain 15s 独立等待(总退出 = max(两链))。e2e 12 用例含 SSE 非缓冲弱断言(避 flaky)、8MiB sha256、WS 握手/回显/断开传播、恶意 Host 转义断言。两轮深度审查修复:subdomain 小写化存储、host/domain 格式校验补全、drain 截断(JoinHandle 曾被丢弃)、错误页 XSS(HTML 转义)、access log(设计 §4.4 遗漏项,全返回分支覆盖)。CI 加 no-default-features clippy/test 步骤(OFF 形态回归;ON 形态由 default 覆盖);desktop warden 依赖退 `default-features = false`(D6)。已知怪癖记录:闭包捕获 `oneshot::Sender` 会使 axum Handler 推断失败(rustc 推断限制,测试侧改用 Arc<AtomicBool>)。

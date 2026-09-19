@@ -30,3 +30,9 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace
+      # 反向代理 feature OFF 形态回归(D8:配置解析无条件,引擎门控;
+      # default 已含 reverse-proxy,故 ON 形态由上方常规步骤覆盖)
+      - name: clippy (no default features)
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+      - name: test (no default features)
+        run: cargo test --workspace --no-default-features
