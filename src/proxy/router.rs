@@ -60,6 +60,16 @@ impl HostRouter {
         }
     }
 
+    /// 全局 preserve_host(auto 路由无路由级覆盖,取全局配置)。
+    pub fn global_preserve_host(&self) -> bool {
+        self.cfg.preserve_host
+    }
+
+    /// supervisor 引用(转发层解析服务引用路由的 ui_url/状态)。
+    pub fn supervisor(&self) -> &Arc<Supervisor> {
+        &self.supervisor
+    }
+
     /// supervisor 快照中 proxy=true 服务的 (label, name) 表;label = subdomain
     /// (小写已由配置规范化保证)缺省 name 的小写。
     fn exposed_services(&self) -> Vec<(String, String)> {
