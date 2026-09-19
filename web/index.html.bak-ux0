@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>warden</title>
-<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="%231e1e2b"/><text x="16" y="22" font-size="17" font-family="monospace" font-weight="bold" fill="%235aa7ff" text-anchor="middle">W</text></svg>'>
 <style>
   :root {
     --bg: #15151f; --panel: #1e1e2b; --panel2: #262636; --border: #33334a;
@@ -25,13 +24,11 @@
 
   /* ── 顶栏 ── */
   header { display: flex; align-items: center; gap: 20px; padding: 14px 24px;
-           background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+           background: var(--panel); border-bottom: 1px solid var(--border); }
   .brand { font-size: 20px; font-weight: 700; letter-spacing: .3px; }
   .brand small { color: var(--muted); font-weight: 500; font-size: 13px; margin-left: 8px; }
   .health { display: flex; align-items: center; gap: 8px; color: var(--sub); font-size: 14px; }
   .health .stat { color: var(--text); }
-  .health .stat.clickable { cursor: pointer; }
-  .health .stat.fail { color: var(--red); font-weight: 600; }
   .grow { flex: 1; }
   .btn { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
          padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 14px;
@@ -44,10 +41,6 @@
   .btn.danger { background: transparent; border-color: var(--red); color: var(--red); }
   .btn.danger:hover { background: rgba(255,107,129,.12); }
   .btn.sm { padding: 5px 12px; font-size: 13px; border-radius: 6px; }
-  .btn.pending { opacity: .55; cursor: wait; }
-  /* 全局危险 hover(服务卡与反代表格共用;.del 不再限定 .svc .acts 作用域) */
-  button.del { border-color: rgba(255,107,129,.45); color: var(--red); }
-  button.del:hover { border-color: var(--red); color: var(--red); background: rgba(255,107,129,.10); }
   .token { display: flex; gap: 8px; align-items: center; }
   .token input { background: var(--bg); border: 1px solid var(--border); color: var(--text);
                  padding: 8px 12px; border-radius: 8px; font-family: inherit; font-size: 14px; width: 190px; outline: none; }
@@ -55,8 +48,6 @@
 
   /* ── 主区 ── */
   main { flex: 1; display: flex; overflow: hidden; padding: 16px; gap: 16px; }
-  /* 日志最大化:隐藏左栏,日志面板占满 */
-  main.maxed aside { display: none; }
 
   /* 左:服务列表 */
   aside { width: 340px; flex-shrink: 0; display: flex; flex-direction: column;
@@ -70,60 +61,46 @@
                     background: var(--panel); border: 1px solid var(--border); border-radius: 999px; cursor: pointer; }
   .groupbar .chip:hover { border-color: #4a4a6a; }
   .groupbar .chip.on { border-color: var(--blue); color: var(--blue); }
-  /* 组级启停常驻(不再悬停才出现——触屏不可达) */
-  .groupbar .chip .gops { display: inline-flex; gap: 2px; }
+  .groupbar .chip .gops { display: none; gap: 2px; }
+  .groupbar .chip:hover .gops { display: inline-flex; }
   .groupbar .chip .gops button { padding: 0 5px; font-size: 10px; line-height: 16px; background: transparent;
                                   border: none; color: var(--sub); cursor: pointer; }
   .groupbar .chip .gops button:hover { color: var(--text); }
   #services { flex: 1; overflow-y: auto; padding: 8px; }
   .svc { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px;
-         cursor: pointer; transition: border-color .15s, background .15s; position: relative; }
+         cursor: pointer; transition: border-color .15s, background .15s; }
   .svc:hover { border-color: #4a4a6a; }
   .svc.sel { border-color: var(--blue); background: rgba(90,167,255,.06); }
-  .svc.attn { border-color: rgba(255,107,129,.5); }
   .svc .top { display: flex; align-items: center; gap: 10px; }
   .svc .nm { font-size: 15px; font-weight: 600; flex: 1; overflow: hidden;
              text-overflow: ellipsis; white-space: nowrap; }
-  .svc .meta { margin-top: 6px; display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 12.5px; flex-wrap: wrap; }
-  .svc .meta a { color: var(--blue-dim); text-decoration: none; }
-  .svc .meta a:hover { color: var(--blue); text-decoration: underline; }
-  .svc .acts { margin-top: 10px; display: flex; gap: 6px; align-items: center; }
-  .svc .acts button, .svc .menu button { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+  .svc .meta { margin-top: 6px; display: flex; gap: 14px; color: var(--muted); font-size: 12.5px; flex-wrap: wrap; }
+  .svc .acts { margin-top: 10px; display: flex; gap: 6px; }
+  .svc .acts button { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
                       padding: 3px 10px; border-radius: 6px; cursor: pointer; font-size: 12.5px; font-family: inherit; }
-  .svc .acts button:hover, .svc .menu button:hover { border-color: var(--blue); color: var(--blue); }
+  .svc .acts button:hover { border-color: var(--blue); color: var(--blue); }
   .svc .acts button:disabled { opacity: .35; cursor: not-allowed; }
   .svc .acts button:disabled:hover { border-color: var(--border); color: var(--text); }
-  .svc .acts button.web { border-color: rgba(87,217,163,.4); color: var(--green); font-weight: 600; }
-  .svc .acts button.web:hover { border-color: var(--green); color: var(--green); background: rgba(87,217,163,.08); }
+  .svc .acts button.del:hover { border-color: var(--red); color: var(--red); }
   .empty { color: var(--muted); padding: 28px; text-align: center; font-size: 14px; }
-
-  /* 「⋯」下拉菜单(低频/危险操作收纳) */
-  .svc .menu { position: absolute; right: 10px; top: 42px; z-index: 5; background: var(--panel2);
-               border: 1px solid var(--border); border-radius: 8px; display: none;
-               flex-direction: column; min-width: 96px; padding: 4px; box-shadow: 0 10px 30px rgba(0,0,0,.45); }
-  .svc .menu.open { display: flex; }
-  .svc .menu button { border: none; background: transparent; text-align: left; padding: 6px 10px; border-radius: 6px; }
-  .svc .acts .more { padding: 3px 9px; }
 
   /* 状态徽章 / 健康点 */
   .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600;
-           padding: 3px 10px; border-radius: 20px; flex-shrink: 0; }
+           padding: 3px 10px; border-radius: 20px; }
   .badge.running { background: rgba(87,217,163,.14); color: var(--green); }
   .badge.stopped { background: rgba(107,112,134,.16); color: var(--sub); }
   .badge.failed { background: rgba(255,107,129,.14); color: var(--red); }
   .badge.restarting, .badge.starting, .badge.stopping { background: rgba(255,212,121,.14); color: var(--yellow); }
-  .badge.failed .d { animation: pulse 1.2s ease-in-out infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
   .badge .d { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-  .hdot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-left: 2px; flex-shrink: 0; }
+  .hdot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-left: 2px; }
   .hdot.healthy { background: var(--green); } .hdot.unhealthy { background: var(--red); }
   .hdot.unknown { background: var(--muted); }
 
   /* 右:日志面板 */
-  .logpanel { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative;
+  .logpanel { flex: 1; display: flex; flex-direction: column; min-width: 0;
               background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
   .logbar { display: flex; align-items: center; gap: 12px; padding: 12px 18px;
-            border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+            border-bottom: 1px solid var(--border); }
   .logbar #logtitle { font-size: 16px; font-weight: 600; }
   .logbar .hint { color: var(--muted); font-size: 12.5px; }
   .logbar input[type=text] { background: var(--bg); border: 1px solid var(--border); color: var(--text);
@@ -132,22 +109,14 @@
   .logbar input[type=text]:focus { border-color: var(--blue-dim); }
   .logbar select { background: var(--bg); border: 1px solid var(--border); color: var(--text);
                     padding: 5px 8px; border-radius: 6px; font-family: inherit; font-size: 13px; outline: none; }
-  .line.err .text, .line.lv-error .text { color: var(--red); }
+  .line.err .text { color: var(--red); }
+  .line.lv-error .text { color: var(--red); }
   .line.lv-warn .text { color: var(--yellow); }
   .line.lv-debug .text { color: var(--muted); }
   #logs { flex: 1; overflow-y: auto; padding: 12px 18px; font-size: 13.5px; line-height: 1.7;
           font-family: ui-monospace, "Cascadia Code", Consolas, "Courier New", monospace; }
   .line { display: flex; gap: 10px; white-space: pre-wrap; word-break: break-all; }
   .line .ts { color: var(--muted); flex-shrink: 0; }
-  /* 过滤关键词高亮 */
-  #logs mark { background: rgba(90,167,255,.28); color: var(--text); border-radius: 3px; padding: 0 1px; }
-
-  /* 暂停期间"新日志"浮动胶囊:点按继续+跳底 */
-  #newpill { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
-             background: var(--blue); color: #0d1420; font-weight: 600; font-size: 13px;
-             padding: 7px 16px; border-radius: 999px; cursor: pointer; border: none;
-             box-shadow: 0 6px 22px rgba(0,0,0,.4); display: none; z-index: 4; font-family: inherit; }
-  #newpill:hover { background: #6fb3ff; }
 
   /* ── 模态表单 ── */
   .overlay { position: fixed; inset: 0; background: rgba(8,8,14,.7); backdrop-filter: blur(3px);
@@ -157,33 +126,17 @@
   .modal h3 { margin: 0 0 20px; font-size: 18px; }
   .modal .field { margin-bottom: 14px; }
   .modal label { display: block; font-size: 13px; color: var(--sub); margin-bottom: 6px; font-weight: 500; }
-  .modal input[type=text], .modal input[type=password], .modal input[type=number], .modal textarea {
+  .modal input[type=text], .modal input[type=number], .modal textarea {
     width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
     padding: 9px 12px; border-radius: 8px; font-family: inherit; font-size: 14px; outline: none; }
   .modal input:focus, .modal textarea:focus { border-color: var(--blue-dim); }
   .modal textarea { min-height: 60px; resize: vertical; }
   .modal .row { display: flex; gap: 14px; }
   .modal .row .field { flex: 1; }
-  .modal .chk { display: flex; gap: 22px; align-items: center; color: var(--sub); font-size: 14px; flex-wrap: wrap; }
+  .modal .chk { display: flex; gap: 22px; align-items: center; color: var(--sub); font-size: 14px; }
   .modal .chk input { accent-color: var(--blue); width: 15px; height: 15px; margin-right: 5px; }
   .modal .err { color: var(--red); font-size: 13px; min-height: 18px; margin-top: 10px; }
   .modal .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
-
-  /* 服务表单分区(details 折叠:新增服务首屏只面对基本字段) */
-  details.secf { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 12px; }
-  details.secf > summary { cursor: pointer; padding: 10px 14px; font-size: 13.5px; font-weight: 600;
-                           color: var(--sub); user-select: none; list-style: none; }
-  details.secf > summary::before { content: '▸ '; color: var(--muted); }
-  details.secf[open] > summary::before { content: '▾ '; }
-  details.secf > summary:hover { color: var(--text); }
-  details.secf .secbody { padding: 4px 14px 10px; }
-
-  /* 路由表单:to/service 单选切换(消除"二选一"歧义) */
-  .radio2 { display: flex; gap: 18px; margin-bottom: 12px; color: var(--sub); font-size: 14px; }
-  .radio2 input { accent-color: var(--blue); margin-right: 5px; }
-  .modal input[type=text]:disabled, .modal select:disabled { opacity: .4; }
-  .modal select { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
-                  padding: 9px 12px; border-radius: 8px; font-family: inherit; font-size: 14px; outline: none; }
 
   /* ── Toast ── */
   #toast { position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
@@ -220,8 +173,7 @@
   .cfghl .tk-num { color: #d9a0e0; }
   .cfghl .tk-bool { color: #e0917f; }
   .cfghint { margin-right: auto; font-size: 12px; color: var(--sub); }
-
-  /* 反代管理页 */
+  /* 反代管理页(P5) */
   .pxview { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; overflow: auto; }
   .pxbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .pxbar .info { font-size: 12px; color: var(--sub); }
@@ -232,24 +184,10 @@
   .pxtable td { padding: 5px 8px; border-bottom: 1px solid var(--border); }
   .pxtable td.op { white-space: nowrap; }
   .pxtable .mono { font-family: Consolas, "Cascadia Mono", monospace; }
-  .pxtable a { color: var(--blue); text-decoration: none; }
-  .pxtable a:hover { text-decoration: underline; }
   .pxtable button.btn { margin-right: 4px; }
   .tag { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 11px;
          background: var(--panel); border: 1px solid var(--border); color: var(--sub); }
   .tag.err { color: #e5484d; border-color: #e5484d55; }
-
-  /* ── 响应式(窄屏:侧栏收窄,超窄:上下堆叠) ── */
-  @media (max-width: 980px) {
-    aside { width: 264px; }
-    header { gap: 10px; padding: 10px 14px; }
-    main { padding: 10px; gap: 10px; }
-  }
-  @media (max-width: 720px) {
-    main { flex-direction: column; }
-    aside { width: auto; max-height: 42vh; }
-    .token input { width: 120px; }
-  }
 </style>
 </head>
 <body>
@@ -258,18 +196,17 @@
   <div class="health">
     <span id="hdot" class="hdot healthy"></span>
     <span id="htext">连接中…</span>
-    <span class="stat clickable" id="count" title="点击只看异常服务" onclick="toggleFailOnly()"></span>
+    <span class="stat" id="count"></span>
   </div>
   <div class="grow"></div>
   <button class="btn" id="pxBtn" onclick="toggleProxyView()">反向代理</button>
   <div class="token">
     <input id="tok" type="password" placeholder="token(可选)">
     <button class="btn" onclick="saveToken()">保存</button>
-    <button class="btn" id="tokClear" onclick="clearToken()" title="清除已保存的 token">清除</button>
   </div>
 </header>
 
-<main id="main">
+<main>
   <aside>
     <div class="side-title">
       <span>服务列表 <span class="count" id="svcCount">0</span></span>
@@ -278,7 +215,7 @@
     <div class="groupbar" id="groupbar"></div>
     <div id="services"><div class="empty">加载中…</div></div>
   </aside>
-  <section class="logpanel" id="logpanel">
+  <section class="logpanel">
     <div class="logbar">
       <span id="logtitle">选择左侧服务查看日志</span>
       <span class="hint" id="loghint"></span>
@@ -294,14 +231,12 @@
       </select>
       <button class="btn sm" id="pauseBtn" onclick="togglePause()">⏸ 暂停</button>
       <button class="btn sm" onclick="clearLog()">清空</button>
-      <button class="btn sm" id="maxBtn" onclick="toggleMax()" title="放大/还原日志面板">⛶</button>
     </div>
     <div id="logs"><div class="empty">未选择服务</div></div>
-    <button id="newpill" onclick="resumeFromPill()">↓ 0 行新日志</button>
   </section>
 </main>
 
-<!-- 反向代理管理页:与主视图互斥切换(hash 路由 #/proxy) -->
+<!-- 反向代理管理页(P5):与主视图互斥切换 -->
 <section class="pxview" id="pxview" style="display:none">
   <div class="pxbar">
     <span class="info" id="pxGlobal">加载中…</span>
@@ -331,17 +266,13 @@
   </div>
 </section>
 
-<!-- 路由编辑表单(新增/编辑共用;Enter 提交 / Esc 关闭) -->
-<div class="overlay" id="routeOverlay" style="display:none" onkeydown="modalKeys(event, 'submitRouteForm')">
+<!-- 路由编辑表单(新增/编辑共用) -->
+<div class="overlay" id="routeOverlay" style="display:none">
   <div class="modal">
     <h3 id="routeTitle">新增路由</h3>
     <div class="field"><label>Host *</label><input id="r_host" type="text" placeholder="如 fs.x.example.com 或 *.x.example.com"></div>
-    <div class="radio2">
-      <label><input type="radio" name="r_mode" value="to" checked onchange="routeMode()"> 上游 URI(to)</label>
-      <label><input type="radio" name="r_mode" value="service" onchange="routeMode()"> 被监护服务(service)</label>
-    </div>
-    <div class="field"><input id="r_to" type="text" placeholder="http://127.0.0.1:9000"></div>
-    <div class="field"><select id="r_service"></select></div>
+    <div class="field"><label>上游 URI(to;与 service 二选一)</label><input id="r_to" type="text" placeholder="http://127.0.0.1:9000"></div>
+    <div class="field"><label>或引用被监护服务(service)</label><select id="r_service"></select></div>
     <div class="chk"><label><input id="r_ph" type="checkbox"> 保留客户端 Host(preserve_host)</label></div>
     <div class="err" id="routeErr"></div>
     <div class="actions">
@@ -351,96 +282,50 @@
   </div>
 </div>
 
-<!-- 服务编辑表单(分区折叠;Enter 提交 / Esc 关闭) -->
-<div class="overlay" id="formOverlay" style="display:none" onkeydown="modalKeys(event, 'submitForm')">
+<!-- 服务编辑表单(新增/编辑共用) -->
+<div class="overlay" id="formOverlay" style="display:none">
   <div class="modal">
     <h3 id="formTitle">新增服务</h3>
-    <details class="secf" open>
-      <summary>基本(名称 / 命令)</summary>
-      <div class="secbody">
-        <div class="field"><label>名称 *</label><input id="f_name" type="text" placeholder="唯一标识(不可含 / \ : * ? &quot; &lt; &gt; |)"></div>
-        <div class="field"><label>描述</label><input id="f_description" type="text" placeholder="如 REST :8790 / lux :6390"></div>
-        <div class="field"><label>可执行文件路径 *</label><input id="f_command" type="text" placeholder="如 /opt/app/bin/app 或 python3"></div>
-        <div class="field"><label>参数(每行一个)</label><textarea id="f_args" placeholder="-n&#10;60&#10;127.0.0.1"></textarea></div>
-      </div>
-    </details>
-    <details class="secf" open>
-      <summary>运行(目录 / 编码 / 分组 / 启停)</summary>
-      <div class="secbody">
-        <div class="row">
-          <div class="field"><label>工作目录</label><input id="f_workdir" type="text" placeholder="可选"></div>
-          <div class="field"><label>优雅停止超时(秒)</label><input id="f_graceful" type="number" value="10" min="0"></div>
-        </div>
-        <div class="field"><label>输出编码(如 gbk;空=UTF-8)</label><input id="f_encoding" type="text" placeholder="可选"></div>
-        <div class="row">
-          <div class="field"><label>分组(可选标签)</label><input id="f_group" type="text" placeholder="如 core"></div>
-          <div class="field"><label>启动优先级(小者先启动)</label><input id="f_priority" type="number" value="0" min="0"></div>
-        </div>
-        <div class="chk">
-          <label><input id="f_autostart" type="checkbox"> 自动启动</label>
-          <label><input id="f_autorestart" type="checkbox"> 崩溃自动重启</label>
-        </div>
-      </div>
-    </details>
-    <details class="secf">
-      <summary>重启策略(次数 / 窗口)</summary>
-      <div class="secbody">
-        <div class="row">
-          <div class="field"><label>最大重试次数</label><input id="f_maxretries" type="number" value="3" min="0"></div>
-          <div class="field"><label>计数重置窗口(秒)</label><input id="f_restartwin" type="number" value="60" min="0"></div>
-        </div>
-      </div>
-    </details>
-    <details class="secf">
-      <summary>健康检查(TCP;留空 host = 不启用)</summary>
-      <div class="secbody">
-        <div class="row">
-          <div class="field"><label>host</label><input id="f_healthhost" type="text" placeholder="如 127.0.0.1"></div>
-          <div class="field"><label>端口</label><input id="f_healthport" type="number" placeholder="如 8790"></div>
-        </div>
-        <div class="row">
-          <div class="field"><label>超时(ms)</label><input id="f_healthtimeout" type="number" value="2000" min="100"></div>
-          <div class="field"><label>间隔(秒)</label><input id="f_healthinterval" type="number" value="5" min="1"></div>
-        </div>
-      </div>
-    </details>
-    <details class="secf">
-      <summary>反向代理(域名暴露)</summary>
-      <div class="secbody">
-        <div class="chk">
-          <label><input id="f_proxy" type="checkbox"> 经反代域名暴露(需 daemon 配置 [proxy] domain)</label>
-        </div>
-        <div class="row">
-          <div class="field"><label>子域标签(缺省=服务名;[a-z0-9]+)</label><input id="f_subdomain" type="text" placeholder="如 fs"></div>
-          <div class="field"><label>上游 ui_url *</label><input id="f_uiurl" type="text" placeholder="如 http://127.0.0.1:8790"></div>
-        </div>
-        <div class="field"><label>说明</label><input type="text" value="访问地址 = https://<子域>.<域名>;<子域>.<域名> 即本服务 ui_url" disabled></div>
-      </div>
-    </details>
-    <details class="secf">
-      <summary>环境变量 / 配置文件</summary>
-      <div class="secbody">
-        <div class="field"><label>环境变量(每行 KEY=VAL)</label><textarea id="f_env" placeholder="RUST_LOG=debug&#10;TZ=Asia/Shanghai"></textarea></div>
-        <div class="field"><label>配置文件路径(「配置」按钮编辑)</label><input id="f_configfile" type="text" placeholder="如 /opt/app/config.toml"></div>
-      </div>
-    </details>
+    <div class="field"><label>名称 *</label><input id="f_name" type="text" placeholder="唯一标识(不可含 / \ : * ? &quot; &lt; &gt; |)"></div>
+    <div class="field"><label>描述</label><input id="f_description" type="text" placeholder="如 REST :8790 / lux :6390"></div>
+    <div class="field"><label>可执行文件路径 *</label><input id="f_command" type="text" placeholder="如 E:/rsiot-field/bin/rs-iot.exe"></div>
+    <div class="field"><label>参数(每行一个)</label><textarea id="f_args" placeholder="-n&#10;60&#10;127.0.0.1"></textarea></div>
+    <div class="row">
+      <div class="field"><label>工作目录</label><input id="f_workdir" type="text" placeholder="可选"></div>
+      <div class="field"><label>优雅停止超时(秒)</label><input id="f_graceful" type="number" value="10" min="0"></div>
+    </div>
+    <div class="field"><label>输出编码(如 gbk;空=UTF-8)</label><input id="f_encoding" type="text" placeholder="可选"></div>
+    <div class="row">
+      <div class="field"><label>分组(可选标签)</label><input id="f_group" type="text" placeholder="如 core"></div>
+      <div class="field"><label>启动优先级(小者先启动)</label><input id="f_priority" type="number" value="0" min="0"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>最大重试次数</label><input id="f_maxretries" type="number" value="3" min="0"></div>
+      <div class="field"><label>计数重置窗口(秒)</label><input id="f_restartwin" type="number" value="60" min="0"></div>
+    </div>
+    <div class="field"><label>环境变量(每行 KEY=VAL)</label><textarea id="f_env" placeholder="RUST_LOG=debug&#10;TZ=Asia/Shanghai"></textarea></div>
+    <div class="row">
+      <div class="field"><label>健康检查 host(留空=不启用)</label><input id="f_healthhost" type="text" placeholder="如 127.0.0.1"></div>
+      <div class="field"><label>健康检查端口</label><input id="f_healthport" type="number" placeholder="如 8790"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>健康检查超时(ms)</label><input id="f_healthtimeout" type="number" value="2000" min="100"></div>
+      <div class="field"><label>健康检查间隔(秒)</label><input id="f_healthinterval" type="number" value="5" min="1"></div>
+    </div>
+    <div class="field"><label>配置文件(桌面版「编辑」按钮用;此处仅保存路径)</label><input id="f_configfile" type="text" placeholder="如 E:/rsiot-field/config.toml"></div>
+    <div class="row">
+      <div class="field"><label>反代子域标签(auto 路由用)</label><input id="f_subdomain" type="text" placeholder="缺省=服务名;[a-z0-9]+"></div>
+      <div class="field"><label>反代上游 ui_url</label><input id="f_uiurl" type="text" placeholder="如 http://127.0.0.1:8790"></div>
+    </div>
+    <div class="chk">
+      <label><input id="f_autostart" type="checkbox"> 自动启动</label>
+      <label><input id="f_autorestart" type="checkbox"> 崩溃自动重启</label>
+      <label><input id="f_proxy" type="checkbox"> 经反代域名暴露</label>
+    </div>
     <div class="err" id="formErr"></div>
     <div class="actions">
       <button class="btn" onclick="closeForm()">取消</button>
       <button class="btn primary" onclick="submitForm()">保存</button>
-    </div>
-  </div>
-</div>
-
-<!-- token 输入模态(401 时自动弹出) -->
-<div class="overlay" id="tokenOverlay" style="display:none" onkeydown="modalKeys(event, 'saveToken')">
-  <div class="modal" style="width:420px">
-    <h3>需要鉴权</h3>
-    <div class="field"><label>daemon 配置的 auth_token</label><input id="tokModal" type="password" placeholder="粘贴 token" autofocus></div>
-    <div class="err" id="tokenErr"></div>
-    <div class="actions">
-      <button class="btn" onclick="closeTokenModal()">取消</button>
-      <button class="btn primary" onclick="saveToken()">保存并连接</button>
     </div>
   </div>
 </div>
@@ -473,21 +358,13 @@
 let token = localStorage.getItem('warden_token') || '';
 let selected = null;
 let currentList = [];
+let es = null;            // EventSource(SSE,无 token 时)
+let pollTimer = null;     // 降级轮询(有 token 时)
+let lastTs = '';          // 轮询去重水位
 let paused = false;
 let svcTimer = null;
-let failOnly = false;        // 顶栏失败计数点击 → 只看异常服务
-let pxInfo = { enabled: false };  // /api/v1/proxy 摘要(WEB 按钮/反代链接共用)
-let lastRenderSig = '';      // 服务列表渲染签名(未变化跳过重建,防悬停态丢失/闪烁)
-let newWhilePaused = 0;      // 暂停期间新到日志行数
 
-// SSE 日志流(fetch 流式读取,支持 Authorization 头——EventSource 不能带 header)
-let streamAbort = null;
-let streamTask = null;
-
-// ── 通用辅助 ─────────────────────────────────────────
-const enc = encodeURIComponent;
-function el(id) { return document.getElementById(id); }
-
+// ── API 辅助 ─────────────────────────────────────────
 function authHeaders() {
   const h = {};
   if (token) h['Authorization'] = 'Bearer ' + token;
@@ -495,111 +372,23 @@ function authHeaders() {
 }
 async function api(path, method = 'GET') {
   const r = await fetch(path, { method, headers: authHeaders() });
-  if (!r.ok) {
-    if (r.status === 401) needsAuth();
-    throw new Error('HTTP ' + r.status);
-  }
+  if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 }
-
-// ── 模态键盘约定:Esc 关闭最上层 / Enter 提交(textarea 除外) ─────────
-function modalKeys(e, submitFn) {
-  if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') {
-    e.preventDefault();
-    window[submitFn]();
-  }
-  // Esc 冒泡到 document 统一处理
-}
-document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
-  // 关闭顺序:配置编辑器(脏守卫)→ 路由 → 服务 → token
-  if (el('cfgOverlay').style.display !== 'none') { closeConfigEditor(); return; }
-  if (el('routeOverlay').style.display !== 'none') { closeRouteForm(); return; }
-  if (el('formOverlay').style.display !== 'none') { closeForm(); return; }
-  if (el('tokenOverlay').style.display !== 'none') { closeTokenModal(); return; }
-  closeMenus();
-});
-function focusFirst(overlayId) {
-  const first = el(overlayId).querySelector('input:not([type=checkbox]):not([type=radio]):not(:disabled), textarea, select');
-  if (first) setTimeout(() => first.focus(), 30);
-}
-
-// ── token:401 自动弹模态 ──────────────────────────────
-let tokenAsked = false;
-function needsAuth() {
-  if (tokenAsked) return;
-  tokenAsked = true;
-  if (el('tokenOverlay').style.display === 'none') {
-    el('tokenErr').textContent = '';
-    el('tokenOverlay').style.display = 'flex';
-    focusFirst('tokenOverlay');
-  }
-}
-function closeTokenModal() { el('tokenOverlay').style.display = 'none'; }
-function clearToken() {
-  token = '';
-  localStorage.removeItem('warden_token');
-  el('tok').value = '';
-  updateTokClear();
-  if (selected) selectService(selected);
-  loadHealth(); loadServices();
-}
-function updateTokClear() { el('tokClear').style.display = token ? '' : 'none'; }
+const enc = encodeURIComponent;
 
 // ── 顶栏:health ─────────────────────────────────────
 async function loadHealth() {
   try {
     const h = await api('/api/v1/health');
-    el('hdot').className = 'hdot ' + (h.status === 'ok' ? 'healthy' : 'unhealthy');
-    el('htext').textContent = h.status === 'ok' ? '连接正常' : '连接异常';
-    const c = el('count');
-    c.textContent = h.running + ' 运行 · ' + h.services + ' 服务 · ' + h.failed + ' 失败';
-    c.classList.toggle('fail', h.failed > 0);
-    el('ver').textContent = 'v' + h.version;
+    document.getElementById('hdot').className = 'hdot ' + (h.status === 'ok' ? 'healthy' : 'unhealthy');
+    document.getElementById('htext').textContent = h.status === 'ok' ? '连接正常' : '连接异常';
+    document.getElementById('count').textContent = h.running + ' 运行 · ' + h.services + ' 服务 · ' + h.failed + ' 失败';
+    document.getElementById('ver').textContent = 'v' + h.version;
   } catch (e) {
-    el('hdot').className = 'hdot unhealthy';
-    el('htext').textContent = '连接失败(token?)';
+    document.getElementById('hdot').className = 'hdot unhealthy';
+    document.getElementById('htext').textContent = '连接失败(token?)';
   }
-}
-function toggleFailOnly() {
-  failOnly = !failOnly;
-  el('count').style.outline = failOnly ? '1px solid var(--red)' : 'none';
-  renderServices(applyGroupFilter(currentList), true);
-}
-
-// ── 反代信息(WEB 按钮 / 反代页链接共用;每次轮询刷新) ───────────
-async function loadPxInfo() {
-  try {
-    const p = await api('/api/v1/proxy');
-    pxInfo = p;
-  } catch (_) { pxInfo = { enabled: false }; }
-}
-function pxListenPort(preferHttps) {
-  const pick = (bind) => { const m = bind && /:(\d+)$/.exec(bind); return m ? +m[1] : null; };
-  if (preferHttps) { const p = pick(pxInfo.https_bind); if (p) return { scheme: 'https', port: p }; }
-  const p2 = pick(pxInfo.http_bind);
-  if (p2) return { scheme: 'http', port: p2 };
-  return null;
-}
-/**
- * WEB 按钮目标 URL(新需求):
- * - 前提:服务定义了 ui_url(未定义 → 按钮禁用)
- * - 引擎运行 + 服务勾选「经反代域名暴露」+ 配了 domain → 域名方式:
- *   https://<subdomain|name>.<domain>:<https 端口><ui_url 的路径部分>
- * - 否则 → 直开 ui_url
- */
-function webUrlFor(s) {
-  if (!s.ui_url) return null;
-  if (pxInfo.enabled && s.proxy && pxInfo.domain) {
-    const ep = pxListenPort(true) || pxListenPort(false);
-    if (ep) {
-      let path = '/';
-      try { const u = new URL(s.ui_url); path = u.pathname + u.search; } catch (_) {}
-      const sub = (s.subdomain || s.name).toLowerCase();
-      return ep.scheme + '://' + sub + '.' + pxInfo.domain + (ep.port === 80 || ep.port === 443 ? '' : ':' + ep.port) + path;
-    }
-  }
-  return s.ui_url;
 }
 
 // ── 左栏:服务列表 ───────────────────────────────────
@@ -609,14 +398,15 @@ async function loadServices() {
   try {
     const data = await api('/api/v1/services');
     currentList = data.services || [];
-    el('svcCount').textContent = currentList.length;
+    document.getElementById('svcCount').textContent = currentList.length;
     renderGroupbar();
     renderServices(applyGroupFilter(currentList));
   } catch (e) {
     const hint = e.message && e.message.includes('401')
       ? '需要鉴权:请在上方填写 token 并保存'
       : e.message || String(e);
-    el('services').innerHTML = '<div class="empty">加载失败:' + hint + '</div>';
+    document.getElementById('services').innerHTML =
+      '<div class="empty">加载失败:' + hint + '</div>';
   }
 }
 
@@ -626,9 +416,9 @@ function applyGroupFilter(list) {
   return list.filter(s => s.group === groupFilter);
 }
 
-/// 组过滤 chips + 组级启停(▶/■ 常驻;调 daemon 组 API,按优先序/逆序执行)。
+/// 组过滤 chips + 组级启停(悬停出 ▶/■;调 daemon 组 API,按优先序/逆序执行)。
 function renderGroupbar() {
-  const bar = el('groupbar');
+  const bar = document.getElementById('groupbar');
   bar.innerHTML = '';
   const counts = new Map();
   for (const s of currentList) if (s.group) counts.set(s.group, (counts.get(s.group) || 0) + 1);
@@ -670,45 +460,15 @@ async function groupAction(group, act) {
   } catch (e) { showToast('组操作失败:' + e.message, true); }
 }
 
-// 状态中文化(徽章)
-const STATUS_L10N = {
-  running: '运行中', stopped: '已停止', failed: '失败',
-  starting: '启动中', stopping: '停止中', restarting: '重启中', unknown: '未知',
-};
-
-// 「⋯」菜单:低频/危险操作收纳(一次只开一个,点外部关闭)
-function closeMenus() {
-  document.querySelectorAll('.svc .menu.open').forEach(m => m.classList.remove('open'));
-}
-document.addEventListener('click', closeMenus);
-
-function renderServices(list, force) {
-  const box = el('services');
-  if (!list.length) {
-    lastRenderSig = '';
-    box.innerHTML = '<div class="empty">' + (failOnly ? '当前没有异常服务 🎉' : '暂无服务,点击右上角「新增服务」') + '</div>';
-    return;
-  }
-  // 异常置顶(failed / unhealthy 优先,组内保持原相对顺序——sort 稳定)
-  const rank = s => ((s.state && s.state.state) === 'failed' || (s.health && s.health.status) === 'unhealthy') ? 0 : 1;
-  const ordered = failOnly ? list.filter(s => rank(s) === 0) : list.slice().sort((a, b) => rank(a) - rank(b));
-
-  // 渲染签名:相关字段都没变 → 跳过重建(保住悬停态/菜单态,避免 2s 闪烁)
-  const sig = ordered.map(s => [
-    s.name, s.state && s.state.state, s.state && s.state.pid, s.health && s.health.status,
-    Math.round((s.metrics && s.metrics.cpu_percent) || 0), Math.round(((s.metrics && s.metrics.memory_kb) || 0) / 1024),
-    s.restart_count, (s.listening_ports || []).map(p => p.local_port).join(','),
-    s.name === selected, rank(s),
-  ].join('|')).join(';') + '#' + (failOnly ? 1 : 0);
-  if (!force && sig === lastRenderSig) return;
-  lastRenderSig = sig;
-
+function renderServices(list) {
+  const box = document.getElementById('services');
   box.innerHTML = '';
-  for (const s of ordered) {
+  if (!list.length) { box.innerHTML = '<div class="empty">暂无服务,点击右上角「新增服务」</div>'; return; }
+  for (const s of list) {
     const st = (s.state && s.state.state) || 'unknown';
     const isRun = st === 'running';
     const row = document.createElement('div');
-    row.className = 'svc' + (s.name === selected ? ' sel' : '') + (rank(s) === 0 ? ' attn' : '');
+    row.className = 'svc' + (s.name === selected ? ' sel' : '');
     row.onclick = () => selectService(s.name);
 
     const top = document.createElement('div');
@@ -719,7 +479,7 @@ function renderServices(list, force) {
     nm.title = s.name;
     const badge = document.createElement('span');
     badge.className = 'badge ' + st;
-    badge.innerHTML = '<span class="d"></span>' + (STATUS_L10N[st] || st);
+    badge.innerHTML = '<span class="d"></span>' + st;
     const hst = (s.health && s.health.status) || 'unknown';
     const hd = document.createElement('span');
     hd.className = 'hdot ' + hst;
@@ -728,73 +488,37 @@ function renderServices(list, force) {
 
     const meta = document.createElement('div');
     meta.className = 'meta';
-    const metaTxt = document.createElement('span');
-    metaTxt.textContent = [
+    meta.textContent = [
       s.group ? '[' + s.group + ']' : '',
       s.priority ? 'P' + s.priority : '',
       s.state && s.state.pid ? 'PID ' + s.state.pid : '',
-      'CPU ' + ((s.metrics && s.metrics.cpu_percent || 0)).toFixed(1) + '%',
-      '内存 ' + Math.round(((s.metrics && s.metrics.memory_kb) || 0) / 1024) + ' MB',
+      'CPU ' + (s.metrics ? s.metrics.cpu_percent.toFixed(1) : '0.0') + '%',
+      '内存 ' + (s.metrics ? Math.round(s.metrics.memory_kb / 1024) : 0) + ' MB',
       '重启 ' + s.restart_count,
+      (s.listening_ports || []).map(p => p.proto + ':' + p.local_port).join(' '),
     ].filter(Boolean).join(' · ');
-    meta.appendChild(metaTxt);
-    // 监听端口可点(以管理页所在主机拼 URL;服务若只绑 127.0.0.1 则仅服务器本机可达)
-    for (const p of (s.listening_ports || [])) {
-      const a = document.createElement('a');
-      a.href = 'http://' + location.hostname + ':' + p.local_port + '/';
-      a.target = '_blank'; a.rel = 'noopener';
-      a.textContent = p.proto + ':' + p.local_port;
-      a.title = '打开 http://' + location.hostname + ':' + p.local_port + '(服务需绑定 0.0.0.0 才可远程访问)';
-      a.onclick = (ev) => ev.stopPropagation();
-      meta.appendChild(a);
-    }
 
     const acts = document.createElement('div');
     acts.className = 'acts';
-    // WEB:打开服务页面(域名方式优先,见 webUrlFor)
-    const bw = document.createElement('button');
-    bw.className = 'web';
-    bw.textContent = 'WEB';
-    const wurl = webUrlFor(s);
-    if (wurl) {
-      bw.title = '新标签页打开 ' + wurl;
-      bw.onclick = (ev) => { ev.stopPropagation(); window.open(wurl, '_blank', 'noopener'); };
-    } else {
-      bw.disabled = true;
-      bw.title = '未配置 ui_url(「属性 → 反向代理」里填写后可用)';
-    }
     const b1 = document.createElement('button');
     b1.textContent = isRun ? '停止' : '启动';
-    b1.onclick = (ev) => {
-      ev.stopPropagation();
-      if (isRun && !confirm('确认停止服务「' + (s.display_name || s.name) + '」?')) return;
-      b1.classList.add('pending'); b1.disabled = true; b1.textContent = '…';
-      startStop(s.name, isRun ? 'stop' : 'start');
-    };
-    // ⋯ 菜单:配置 / 属性 / 删除(危险动作与常规动作隔离)
-    const bm = document.createElement('button');
-    bm.className = 'more'; bm.textContent = '⋯'; bm.title = '更多操作';
-    const menu = document.createElement('div');
-    menu.className = 'menu';
-    const mCfg = document.createElement('button');
-    mCfg.textContent = '配置'; mCfg.title = '编辑服务的配置文件';
-    mCfg.disabled = !s.config_file;
-    mCfg.onclick = (ev) => { ev.stopPropagation(); closeMenus(); openConfigEditor(s.name); };
-    const mProp = document.createElement('button');
-    mProp.textContent = '属性'; mProp.title = '编辑服务属性';
-    mProp.onclick = (ev) => { ev.stopPropagation(); closeMenus(); openForm(s.name); };
-    const mDel = document.createElement('button');
-    mDel.className = 'del'; mDel.textContent = '删除';
-    mDel.onclick = (ev) => { ev.stopPropagation(); closeMenus(); deleteService(s.name); };
-    menu.append(mCfg, mProp, mDel);
-    bm.onclick = (ev) => {
-      ev.stopPropagation();
-      const was = menu.classList.contains('open');
-      closeMenus();
-      if (!was) menu.classList.add('open');
-    };
-    acts.append(bw, b1, bm);
-    row.append(top, meta, acts, menu);
+    b1.onclick = (ev) => { ev.stopPropagation(); startStop(s.name, isRun ? 'stop' : 'start'); };
+    // 配置文件编辑(与桌面版同名按钮;未配置路径时禁用)
+    const bc = document.createElement('button');
+    bc.textContent = '配置';
+    bc.title = s.config_file ? '编辑配置文件 ' + s.config_file : '未配置配置文件(在「属性」中填写路径)';
+    if (!s.config_file) bc.disabled = true;
+    bc.onclick = (ev) => { ev.stopPropagation(); openConfigEditor(s.name); };
+    const b2 = document.createElement('button');
+    b2.textContent = '属性';
+    b2.onclick = (ev) => { ev.stopPropagation(); openForm(s.name); };
+    const b3 = document.createElement('button');
+    b3.className = 'del';
+    b3.textContent = '删除';
+    b3.onclick = (ev) => { ev.stopPropagation(); deleteService(s.name); };
+    acts.append(b1, bc, b2, b3);
+
+    row.append(top, meta, acts);
     box.appendChild(row);
   }
 }
@@ -803,71 +527,66 @@ function renderServices(list, force) {
 function selectService(name) {
   if (selected === name) return;
   selected = name;
+  lastTs = '';
   closeStream();
-  el('logtitle').textContent = name;
-  // 过滤条件跨服务保留(追同一错误时免重输);首次给一次性提示
-  if (!selectService.hinted && (logFilter || logLevel)) {
-    selectService.hinted = true;
-    showToast('已保留日志过滤条件(清空输入框可复位)');
-  }
+  document.getElementById('logtitle').textContent = name;
+  // 切换服务:重置日志过滤
+  document.getElementById('logFilter').value = '';
+  document.getElementById('logLevel').value = '';
+  logFilter = ''; logLevel = '';
   clearLog(true);
+  // 先拉历史快照
   api('/api/v1/services/' + enc(name) + '/logs?tail=200').then(d => {
     for (const l of d.lines) appendLog(l);
-    updateLogHint(el('logs').childNodes.length);
+    if (d.lines.length) lastTs = d.lines[d.lines.length - 1].ts;
+    updateLogHint(document.getElementById('logs').childNodes.length);
     scrollBottom();
   }).catch(() => {});
   openStream(name);
-  renderServices(applyGroupFilter(currentList), true);
+  renderServices(currentList);
 }
-
-// fetch 流式读 SSE(带 Authorization 头;断线 3s 自动重连;切换服务时 abort)
 function openStream(name) {
   closeStream();
-  const url = '/api/v1/services/' + enc(name) + '/logs/stream';
-  streamAbort = new AbortController();
-  const ac = streamAbort;
-  streamTask = (async () => {
-    while (!ac.signal.aborted) {
+  if (token) {
+    // EventSource 不能设 header → 有 token 时降级轮询
+    pollTimer = setInterval(pollLogs, 1500);
+    pollLogs();
+  } else {
+    es = new EventSource('/api/v1/services/' + enc(name) + '/logs/stream');
+    es.addEventListener('log', ev => {
       try {
-        const r = await fetch(url, { headers: authHeaders(), signal: ac.signal });
-        if (!r.ok || !r.body) throw new Error('HTTP ' + r.status);
-        const reader = r.body.getReader();
-        const dec = new TextDecoder();
-        let buf = '';
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += dec.decode(value, { stream: true });
-          let idx;
-          while ((idx = buf.indexOf('\n\n')) >= 0) {
-            const chunk = buf.slice(0, idx);
-            buf = buf.slice(idx + 2);
-            for (const line of chunk.split('\n')) {
-              if (line.startsWith('data:')) {
-                try { appendLog(JSON.parse(line.slice(5))); } catch (_) {}
-              }
-            }
-          }
-        }
-      } catch (e) {
-        if (ac.signal.aborted) return;
-      }
-      if (ac.signal.aborted) return;
-      await new Promise(r2 => setTimeout(r2, 3000));
+        const line = JSON.parse(ev.data);
+        appendLog(line);
+        if (!paused) scrollBottom();
+      } catch (_) {}
+    });
+    // 断线浏览器自动重连,无需处理 onerror
+  }
+}
+async function pollLogs() {
+  if (!selected) return;
+  try {
+    const d = await api('/api/v1/services/' + enc(selected) + '/logs?tail=80');
+    let added = false;
+    for (const l of d.lines) {
+      if (!lastTs || l.ts > lastTs) { appendLog(l); added = true; }
     }
-  })();
+    if (d.lines.length) lastTs = d.lines[d.lines.length - 1].ts;
+    if (added && !paused) scrollBottom();
+  } catch (_) {}
 }
 function closeStream() {
-  if (streamAbort) { streamAbort.abort(); streamAbort = null; }
-  streamTask = null;
+  if (es) { es.close(); es = null; }
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 }
 
-// ── 日志渲染(缓冲 + 过滤 + 高亮 + 增量 DOM,textContent/转义防 XSS)──
+// ── 日志渲染(缓冲 + 过滤 + 增量 DOM,textContent 防 XSS)────────
 // 高频日志性能:行先进 JS 缓冲(上限 2000),过滤时不匹配的行不建 DOM 节点
-// (缓冲保留,清过滤即恢复);DOM 上限 1500 行,超出批量删首行。
-let logBuf = [];
-let logFilter = '';    // 关键词(小写比较)
-let logLevel = '';     // 等级过滤(''=全部)
+// (缓冲保留,清过滤即恢复);DOM 上限 1500 行,超出批量删首行。无需虚拟滚动/
+// Canvas——本地监护每秒几十行场景增量 DOM 足够;若未来达每秒千行再升级虚拟滚动。
+let logBuf = [];       // 全量缓冲(上限 LOG_BUF_MAX)
+let logFilter = '';    // 关键词(大小写不敏感)
+let logLevel = '';    // 等级过滤(''=全部)
 const LOG_BUF_MAX = 2000;
 const LOG_DOM_MAX = 1500;
 
@@ -876,13 +595,9 @@ function matchLog(line) {
   if (logFilter && !line.text.toLowerCase().includes(logFilter)) return false;
   return true;
 }
-// 文本高亮:先整体转义,再对关键词(已转义后可能出现 &amp; 中的子串——
-// 关键词同样转义后再匹配,避免注入;命中片段包 <mark>)
-function esc(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
 function appendLogDom(box, line) {
   const div = document.createElement('div');
+  // 等级着色:error 红 / warn 黄 / debug 灰;stderr 且未知等级时保持红(原行为)
   const lv = line.level || 'unknown';
   const cls = lv === 'error' || lv === 'warn' || lv === 'debug'
     ? 'lv-' + lv
@@ -893,19 +608,12 @@ function appendLogDom(box, line) {
   ts.textContent = line.ts ? new Date(line.ts).toLocaleTimeString() : '';
   const txt = document.createElement('span');
   txt.className = 'text';
-  if (logFilter) {
-    // 在转义后文本上按(转义后)关键词切分,命中片段包 <mark>;两端同经 esc,无注入面
-    const kw = esc(logFilter);
-    const eText = esc(line.text);
-    txt.innerHTML = eText.split(kw).join('<mark>' + kw + '</mark>');
-  } else {
-    txt.textContent = line.text;
-  }
+  txt.textContent = line.text;
   div.append(ts, txt);
   box.appendChild(div);
 }
 function updateLogHint(shown) {
-  const h = el('loghint');
+  const h = document.getElementById('loghint');
   const total = logBuf.length;
   if (logFilter || logLevel) {
     h.textContent = '显示 ' + shown + '/' + total + ' 行' + (logLevel ? ' · 等级 ' + logLevel : '') + (logFilter ? ' · 匹配 "' + logFilter + '"' : '');
@@ -913,40 +621,27 @@ function updateLogHint(shown) {
     h.textContent = '';
   }
 }
-function updatePill() {
-  const p = el('newpill');
-  if (paused && newWhilePaused > 0) {
-    p.textContent = '↓ ' + newWhilePaused + ' 行新日志';
-    p.style.display = '';
-  } else {
-    p.style.display = 'none';
-  }
-}
 function appendLog(line) {
   logBuf.push(line);
   if (logBuf.length > LOG_BUF_MAX) {
     logBuf.shift();
+    // 仅无过滤时 DOM 与缓冲一一对应,同步删首行(过滤模式由 rebuildLogs 全量重建)
     if (!logFilter && !logLevel) {
-      const box = el('logs');
+      const box = document.getElementById('logs');
       if (box.firstChild && !box.firstChild.classList.contains('empty')) box.removeChild(box.firstChild);
     }
   }
-  if (paused) {
-    // 暂停中:只计数不渲染,浮动胶囊提示"错过了什么"
-    if (matchLog(line)) newWhilePaused++;
-    updatePill();
-    return;
-  }
-  if (!matchLog(line)) return;
-  const box = el('logs');
+  if (!matchLog(line)) return; // 过滤不匹配:不入 DOM
+  const box = document.getElementById('logs');
   if (box.firstChild && box.firstChild.classList.contains('empty')) box.innerHTML = '';
   appendLogDom(box, line);
   while (box.childNodes.length > LOG_DOM_MAX) box.removeChild(box.firstChild);
   updateLogHint(box.childNodes.length);
-  scrollBottom();
+  if (!paused) scrollBottom();
 }
+// 过滤条件变化:全量重建可见区(保留滚动位置;原在底部则保持底部)
 function rebuildLogs() {
-  const box = el('logs');
+  const box = document.getElementById('logs');
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   box.innerHTML = '';
   let shown = 0;
@@ -957,52 +652,34 @@ function rebuildLogs() {
   box.scrollTop = atBottom ? box.scrollHeight : 0;
 }
 function onLogFilter() {
-  logFilter = el('logFilter').value.trim().toLowerCase();
-  logLevel = el('logLevel').value;
+  logFilter = document.getElementById('logFilter').value.trim().toLowerCase();
+  logLevel = document.getElementById('logLevel').value;
   rebuildLogs();
 }
 function scrollBottom() {
-  const box = el('logs');
+  const box = document.getElementById('logs');
   box.scrollTop = box.scrollHeight;
 }
 function clearLog(keepPlaceholder) {
   logBuf = [];
-  newWhilePaused = 0;
-  updatePill();
-  const box = el('logs');
+  const box = document.getElementById('logs');
   box.innerHTML = keepPlaceholder ? '<div class="empty">加载日志中…</div>' : '';
   updateLogHint(0);
 }
-function resumeFromPill() {
-  paused = false;
-  el('pauseBtn').textContent = '⏸ 暂停';
-  newWhilePaused = 0;
-  // 暂停期间跳过的匹配行补渲染
-  rebuildLogs();
-  updatePill();
-  scrollBottom();
-}
 
-// ── 操作:start / stop(带 pending 态)──────────────────
+// ── 操作:start / stop ───────────────────────────────
 async function startStop(name, action) {
   try {
-    const r = await fetch('/api/v1/services/' + enc(name) + '/' + action, { method: 'POST', headers: authHeaders() });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    await fetch('/api/v1/services/' + enc(name) + '/' + action, { method: 'POST', headers: authHeaders() });
     showToast(action === 'stop' ? '已停止:' + name : '已启动:' + name);
+    loadServices();
   } catch (e) { showToast(action + ' 失败:' + e.message, true); }
-  // 状态可能没变(如启动失败):强制下次渲染还原按钮
-  lastRenderSig = '';
-  loadServices();
 }
 
 // ── 顶栏控制 ─────────────────────────────────────────
 function saveToken() {
-  const fromModal = el('tokenOverlay').style.display !== 'none';
-  token = (fromModal ? el('tokModal') : el('tok')).value.trim();
-  if (fromModal) { el('tok').value = token; closeTokenModal(); }
-  tokenAsked = false;
+  token = document.getElementById('tok').value.trim();
   localStorage.setItem('warden_token', token);
-  updateTokClear();
   if (selected) selectService(selected);
   loadHealth(); loadServices();
 }
@@ -1013,99 +690,98 @@ let editingCfg = null;  // 编辑时加载的完整配置(表单未暴露的字�
 function openForm(name) {
   editingName = name || null;
   editingCfg = null;
-  el('formErr').textContent = '';
-  el('formTitle').textContent = name ? '编辑服务:' + name : '新增服务';
+  document.getElementById('formErr').textContent = '';
+  document.getElementById('formTitle').textContent = name ? '编辑服务:' + name : '新增服务';
   ['f_name','f_command','f_args','f_workdir','f_encoding','f_env','f_group','f_description','f_configfile','f_healthhost','f_healthport','f_subdomain','f_uiurl'].forEach(id => {
-    el(id).value = '';
+    document.getElementById(id).value = '';
   });
-  el('f_graceful').value = '10';
-  el('f_priority').value = '0';
-  el('f_maxretries').value = '3';
-  el('f_restartwin').value = '60';
-  el('f_healthtimeout').value = '2000';
-  el('f_healthinterval').value = '5';
-  el('f_autostart').checked = false;
-  el('f_autorestart').checked = false;
-  el('f_proxy').checked = false;
+  document.getElementById('f_graceful').value = '10';
+  document.getElementById('f_priority').value = '0';
+  document.getElementById('f_maxretries').value = '3';
+  document.getElementById('f_restartwin').value = '60';
+  document.getElementById('f_healthtimeout').value = '2000';
+  document.getElementById('f_healthinterval').value = '5';
+  document.getElementById('f_autostart').checked = false;
+  document.getElementById('f_autorestart').checked = false;
+  document.getElementById('f_proxy').checked = false;
   if (name) {
     // 编辑:拉完整配置预填(含 restart/health 子字段,避免保存时被 serde default 重置)
     api('/api/v1/services/' + enc(name) + '/config').then(cfg => {
       editingCfg = cfg;
-      el('f_name').value = cfg.name || '';
-      el('f_name').disabled = true; // PUT 要求 body.name==路径名
-      el('f_description').value = cfg.description || '';
-      el('f_command').value = cfg.command || '';
-      el('f_args').value = (cfg.args || []).join('\n');
-      el('f_workdir').value = cfg.working_dir || '';
-      el('f_graceful').value = cfg.graceful_timeout_secs ?? 10;
-      el('f_encoding').value = cfg.output_encoding || '';
-      el('f_group').value = cfg.group || '';
-      el('f_priority').value = cfg.priority ?? 0;
-      el('f_maxretries').value = cfg.restart?.max_retries ?? 3;
-      el('f_restartwin').value = cfg.restart?.restart_window_secs ?? 60;
-      el('f_env').value = Object.entries(cfg.environment || {}).map(([k,v]) => k + '=' + v).join('\n');
-      el('f_healthhost').value = cfg.health?.host || '';
-      el('f_healthport').value = cfg.health?.port || '';
-      el('f_healthtimeout').value = cfg.health?.timeout_ms ?? 2000;
-      el('f_healthinterval').value = cfg.health?.interval_secs ?? 5;
-      el('f_configfile').value = cfg.config_file || '';
-      el('f_autostart').checked = !!cfg.auto_start;
-      el('f_autorestart').checked = !!cfg.auto_restart;
-      el('f_proxy').checked = !!cfg.proxy;
-      el('f_subdomain').value = cfg.subdomain || '';
-      el('f_uiurl').value = cfg.ui_url || '';
+      document.getElementById('f_name').value = cfg.name || '';
+      document.getElementById('f_name').disabled = true; // PUT 要求 body.name==路径名
+      document.getElementById('f_description').value = cfg.description || '';
+      document.getElementById('f_command').value = cfg.command || '';
+      document.getElementById('f_args').value = (cfg.args || []).join('\n');
+      document.getElementById('f_workdir').value = cfg.working_dir || '';
+      document.getElementById('f_graceful').value = cfg.graceful_timeout_secs ?? 10;
+      document.getElementById('f_encoding').value = cfg.output_encoding || '';
+      document.getElementById('f_group').value = cfg.group || '';
+      document.getElementById('f_priority').value = cfg.priority ?? 0;
+      document.getElementById('f_maxretries').value = cfg.restart?.max_retries ?? 3;
+      document.getElementById('f_restartwin').value = cfg.restart?.restart_window_secs ?? 60;
+      document.getElementById('f_env').value = Object.entries(cfg.environment || {}).map(([k,v]) => k + '=' + v).join('\n');
+      document.getElementById('f_healthhost').value = cfg.health?.host || '';
+      document.getElementById('f_healthport').value = cfg.health?.port || '';
+      document.getElementById('f_healthtimeout').value = cfg.health?.timeout_ms ?? 2000;
+      document.getElementById('f_healthinterval').value = cfg.health?.interval_secs ?? 5;
+      document.getElementById('f_configfile').value = cfg.config_file || '';
+      document.getElementById('f_autostart').checked = !!cfg.auto_start;
+      document.getElementById('f_autorestart').checked = !!cfg.auto_restart;
+      document.getElementById('f_proxy').checked = !!cfg.proxy;
+      document.getElementById('f_subdomain').value = cfg.subdomain || '';
+      document.getElementById('f_uiurl').value = cfg.ui_url || '';
     }).catch(e => showToast('加载配置失败:' + e.message, true));
   } else {
-    el('f_name').disabled = false;
+    document.getElementById('f_name').disabled = false;
   }
-  el('formOverlay').style.display = 'flex';
-  if (!name) focusFirst('formOverlay'); // 编辑态等预填完成再聚焦意义不大
+  document.getElementById('formOverlay').style.display = 'flex';
 }
 function closeForm() {
-  el('formOverlay').style.display = 'none';
+  document.getElementById('formOverlay').style.display = 'none';
 }
 function submitForm() {
-  const name = el('f_name').value.trim();
-  const command = el('f_command').value.trim();
-  if (!name || !command) { el('formErr').textContent = '名称和命令必填'; return; }
+  const name = document.getElementById('f_name').value.trim();
+  const command = document.getElementById('f_command').value.trim();
+  if (!name || !command) { document.getElementById('formErr').textContent = '名称和命令必填'; return; }
   const cfg = {
     name,
     command,
-    description: el('f_description').value.trim(),
-    args: el('f_args').value.split('\n').map(s => s.trim()).filter(Boolean),
-    working_dir: el('f_workdir').value.trim() || null,
-    graceful_timeout_secs: parseInt(el('f_graceful').value) || 10,
-    output_encoding: el('f_encoding').value.trim() || null,
-    group: el('f_group').value.trim() || null,
-    priority: parseInt(el('f_priority').value) || 0,
-    auto_start: el('f_autostart').checked,
-    auto_restart: el('f_autorestart').checked,
+    description: document.getElementById('f_description').value.trim(),
+    args: document.getElementById('f_args').value.split('\n').map(s => s.trim()).filter(Boolean),
+    working_dir: document.getElementById('f_workdir').value.trim() || null,
+    graceful_timeout_secs: parseInt(document.getElementById('f_graceful').value) || 10,
+    output_encoding: document.getElementById('f_encoding').value.trim() || null,
+    group: document.getElementById('f_group').value.trim() || null,
+    priority: parseInt(document.getElementById('f_priority').value) || 0,
+    auto_start: document.getElementById('f_autostart').checked,
+    auto_restart: document.getElementById('f_autorestart').checked,
     // 重启策略显式回传(表单只暴露 max_retries/窗口;退避参数编辑时保留原值)
     restart: {
-      max_retries: parseInt(el('f_maxretries').value) || 0,
+      max_retries: parseInt(document.getElementById('f_maxretries').value) || 0,
       backoff_initial_ms: editingCfg?.restart?.backoff_initial_ms ?? 1000,
       backoff_max_ms: editingCfg?.restart?.backoff_max_ms ?? 60000,
       backoff_factor: editingCfg?.restart?.backoff_factor ?? 2.0,
-      restart_window_secs: parseInt(el('f_restartwin').value) || 60,
+      restart_window_secs: parseInt(document.getElementById('f_restartwin').value) || 60,
     },
     // 反代暴露(auto 路由):ui_url 为上游,subdomain 为子域标签
-    ui_url: el('f_uiurl').value.trim() || null,
-    subdomain: el('f_subdomain').value.trim() || null,
-    proxy: el('f_proxy').checked,
-    config_file: el('f_configfile').value.trim() || null,
-    health: (el('f_healthhost').value.trim() && el('f_healthport').value)
+    ui_url: document.getElementById('f_uiurl').value.trim() || null,
+    subdomain: document.getElementById('f_subdomain').value.trim() || null,
+    proxy: document.getElementById('f_proxy').checked,
+    config_file: document.getElementById('f_configfile').value.trim() || null,
+    health: (document.getElementById('f_healthhost').value.trim() && document.getElementById('f_healthport').value)
       ? {
           type: 'tcp',
-          host: el('f_healthhost').value.trim(),
-          port: parseInt(el('f_healthport').value),
-          timeout_ms: parseInt(el('f_healthtimeout').value) || 2000,
-          interval_secs: parseInt(el('f_healthinterval').value) || 5,
+          host: document.getElementById('f_healthhost').value.trim(),
+          port: parseInt(document.getElementById('f_healthport').value),
+          timeout_ms: parseInt(document.getElementById('f_healthtimeout').value) || 2000,
+          interval_secs: parseInt(document.getElementById('f_healthinterval').value) || 5,
         }
       : null,
     environment: {},
   };
   // 环境变量 KEY=VAL 每行
-  for (const line of el('f_env').value.split('\n')) {
+  for (const line of document.getElementById('f_env').value.split('\n')) {
     const i = line.indexOf('=');
     if (i > 0) cfg.environment[line.slice(0, i).trim()] = line.slice(i + 1).trim();
   }
@@ -1119,7 +795,7 @@ function submitForm() {
       showToast((editingName ? '已更新:' : '已创建:') + name);
       loadServices();
     })
-    .catch(e => { el('formErr').textContent = '保存失败:' + e.message; });
+    .catch(e => { document.getElementById('formErr').textContent = '保存失败:' + e.message; });
 }
 function deleteService(name) {
   if (!confirm('确认删除服务「' + name + '」?(运行中不可删)')) return;
@@ -1127,7 +803,7 @@ function deleteService(name) {
     .then(async r => {
       const body = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error((body && body.message) || ('HTTP ' + r.status));
-      if (selected === name) { selected = null; closeStream(); el('logtitle').textContent = '选择左侧服务查看日志'; }
+      if (selected === name) { selected = null; closeStream(); document.getElementById('logtitle').textContent = '选择左侧服务查看日志'; }
       showToast('已删除:' + name);
       loadServices();
     })
@@ -1158,101 +834,88 @@ function cfgHighlight(text) {
   return out + cfgEsc(text.slice(last));
 }
 function cfgRender() {
-  el('cfgHl').innerHTML = cfgHighlight(el('cfgTa').value);
+  document.getElementById('cfgHl').innerHTML = cfgHighlight(document.getElementById('cfgTa').value);
 }
 function cfgSyncScroll() {
-  const hl = el('cfgHl'), ta = el('cfgTa');
+  const hl = document.getElementById('cfgHl'), ta = document.getElementById('cfgTa');
   hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft;
 }
 function cfgOnKey(e) {
   if (e.key === 'Tab') { // Tab 插入两空格,不跳出输入框
     e.preventDefault();
-    const t = e.target, s = t.selectionStart, en = t.selectionEnd;
-    t.value = t.value.slice(0, s) + '  ' + t.value.slice(en);
-    t.selectionStart = t.selectionEnd = s + 2;
+    const el = e.target, s = el.selectionStart, en = el.selectionEnd;
+    el.value = el.value.slice(0, s) + '  ' + el.value.slice(en);
+    el.selectionStart = el.selectionEnd = s + 2;
     cfgDirty = true; cfgRender();
   }
 }
 function openConfigEditor(name) {
   cfgName = name; cfgDirty = false;
-  el('cfgSvc').textContent = name;
-  el('cfgErr').textContent = '';
-  el('cfgWarn').style.display = 'none';
-  el('cfgTa').value = '';
+  document.getElementById('cfgSvc').textContent = name;
+  document.getElementById('cfgErr').textContent = '';
+  document.getElementById('cfgWarn').style.display = 'none';
+  document.getElementById('cfgTa').value = '';
   cfgRender();
-  el('cfgOverlay').style.display = 'flex';
+  document.getElementById('cfgOverlay').style.display = 'flex';
   api('/api/v1/services/' + enc(name) + '/config-file').then(d => {
-    el('cfgPath').textContent = d.path;
-    el('cfgFmt').textContent = d.format;
+    document.getElementById('cfgPath').textContent = d.path;
+    document.getElementById('cfgFmt').textContent = d.format;
     cfgFormattable = d.format === 'toml' || d.format === 'json';
-    el('cfgFmtBtn').style.display = cfgFormattable ? '' : 'none';
-    el('cfgHint').textContent = cfgFormattable ? '' : '该格式不做语法校验,按纯文本保存';
-    el('cfgWarn').style.display = d.exists ? 'none' : '';
-    el('cfgTa').value = d.content || '';
+    document.getElementById('cfgFmtBtn').style.display = cfgFormattable ? '' : 'none';
+    document.getElementById('cfgHint').textContent = cfgFormattable ? '' : '该格式不做语法校验,按纯文本保存';
+    document.getElementById('cfgWarn').style.display = d.exists ? 'none' : '';
+    document.getElementById('cfgTa').value = d.content || '';
     cfgRender();
   }).catch(e => {
-    el('cfgErr').textContent = '读取失败:' + e.message;
+    document.getElementById('cfgErr').textContent = '读取失败:' + e.message;
   });
 }
 function closeConfigEditor() {
   if (cfgDirty && !confirm('有未保存的修改,确认关闭?')) return;
-  el('cfgOverlay').style.display = 'none';
+  document.getElementById('cfgOverlay').style.display = 'none';
   cfgName = null;
 }
 async function saveConfigFile(doFormat) {
   if (!cfgName) return;
-  el('cfgErr').textContent = '';
+  document.getElementById('cfgErr').textContent = '';
   try {
     const r = await fetch('/api/v1/services/' + enc(cfgName) + '/config-file', {
       method: 'PUT',
       headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-      body: JSON.stringify({ content: el('cfgTa').value, format: doFormat }),
+      body: JSON.stringify({ content: document.getElementById('cfgTa').value, format: doFormat }),
     });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body.message || ('HTTP ' + r.status));
     cfgDirty = false;
     if (doFormat) { // 回读格式化后的内容展示
       const d = await api('/api/v1/services/' + enc(cfgName) + '/config-file');
-      el('cfgTa').value = d.content || '';
+      document.getElementById('cfgTa').value = d.content || '';
       cfgRender();
     }
-    el('cfgWarn').style.display = 'none';
+    document.getElementById('cfgWarn').style.display = 'none';
     showToast('已保存:' + cfgName + ' 配置文件');
   } catch (e) {
-    el('cfgErr').textContent = '保存失败:' + e.message;
+    document.getElementById('cfgErr').textContent = '保存失败:' + e.message;
   }
 }
 
-// ── 反向代理管理页 ────────────────────────────────────
+// ── 反向代理管理页(P5)────────────────────────────────
 let pxOpen = false;
-function setView(px) {
-  pxOpen = px;
-  el('pxview').style.display = px ? 'flex' : 'none';
-  el('main').style.display = px ? 'none' : '';
-  el('pxBtn').classList.toggle('primary', px);
-  if (px) loadProxy();
-}
 function toggleProxyView() {
-  location.hash = pxOpen ? '' : '#/proxy'; // hashchange 统一应用
-}
-window.addEventListener('hashchange', () => setView(location.hash === '#/proxy'));
-
-// 反代监听入口 → 某 host 的完整访问 URL(路由表/auto 表链接共用)
-function pxUrlFor(host) {
-  const ep = pxListenPort(true) || pxListenPort(false);
-  if (!ep) return null;
-  const bare = ep.port === 80 || ep.port === 443;
-  return ep.scheme + '://' + host + (bare ? '' : ':' + ep.port) + '/';
+  pxOpen = !pxOpen;
+  document.getElementById('pxview').style.display = pxOpen ? 'flex' : 'none';
+  document.querySelector('main').style.display = pxOpen ? 'none' : '';
+  document.getElementById('pxBtn').classList.toggle('primary', pxOpen);
+  if (pxOpen) loadProxy();
 }
 
 async function loadProxy() {
   let px, services;
   try {
     px = await api('/api/v1/proxy');
-    pxInfo = px;
     services = (await api('/api/v1/services')).services || [];
   } catch (e) {
-    el('pxGlobal').textContent = '加载失败:' + e.message + '(404 = daemon 未编译 reverse-proxy feature)';
+    document.getElementById('pxGlobal').textContent = '加载失败:' + e.message + '(404 = daemon 未编译 reverse-proxy feature)';
     return;
   }
   // 全局信息
@@ -1262,10 +925,10 @@ async function loadProxy() {
   if (px.http_bind) parts.push('http ' + esc(px.http_bind));
   if (px.https_bind) parts.push('https ' + esc(px.https_bind));
   parts.push('preserve_host=' + (px.preserve_host ? 'true' : 'false'));
-  el('pxGlobal').innerHTML = parts.join(' · ');
+  document.getElementById('pxGlobal').innerHTML = parts.join(' · ');
 
-  // 显式路由表(host 为链接,点击直达)
-  const rt = el('pxRoutes');
+  // 显式路由表
+  const rt = document.getElementById('pxRoutes');
   rt.innerHTML = '';
   if (!px.routes || !px.routes.length) {
     rt.innerHTML = '<tr><td colspan="4" class="empty">暂无显式路由</td></tr>';
@@ -1273,14 +936,7 @@ async function loadProxy() {
   for (const r of px.routes) {
     const tr = document.createElement('tr');
     const td1 = document.createElement('td');
-    td1.className = 'mono';
-    const link = pxUrlFor(r.host);
-    if (link) {
-      const a = document.createElement('a');
-      a.href = link; a.target = '_blank'; a.rel = 'noopener';
-      a.textContent = r.host; a.title = '打开 ' + link;
-      td1.appendChild(a);
-    } else td1.textContent = r.host;
+    td1.className = 'mono'; td1.textContent = r.host;
     const td2 = document.createElement('td');
     td2.className = 'mono';
     td2.textContent = r.to || ('service:' + r.service);
@@ -1299,35 +955,28 @@ async function loadProxy() {
     rt.appendChild(tr);
   }
 
-  // auto 服务暴露表(proxy=true 的服务;子域可点)
-  const au = el('pxAuto');
+  // auto 服务暴露表(proxy=true 的服务)
+  const au = document.getElementById('pxAuto');
   au.innerHTML = '';
   const exposed = services.filter(x => x.proxy);
   if (!exposed.length) au.innerHTML = '<tr><td colspan="4" class="empty">暂无暴露服务(服务属性勾选「经反代域名暴露」)</td></tr>';
   for (const x of exposed) {
-    const host = (x.subdomain || x.name).toLowerCase() + (px.domain ? '.' + px.domain : '');
     const tr = document.createElement('tr');
     const t1 = document.createElement('td');
     t1.className = 'mono';
-    const link = pxUrlFor(host);
-    if (link) {
-      const a = document.createElement('a');
-      a.href = link; a.target = '_blank'; a.rel = 'noopener';
-      a.textContent = host; a.title = '打开 ' + link;
-      t1.appendChild(a);
-    } else t1.textContent = host;
+    t1.textContent = (x.subdomain || x.name).toLowerCase() + (px.domain ? '.' + px.domain : '');
     const t2 = document.createElement('td');
     t2.textContent = x.name;
     const t3 = document.createElement('td');
     t3.className = 'mono'; t3.textContent = x.ui_url || '(未配置 → 502)';
     const t4 = document.createElement('td');
-    t4.textContent = STATUS_L10N[(x.state && x.state.state) || 'unknown'] || (x.state && x.state.state) || 'unknown';
+    t4.textContent = (x.state && x.state.state) || 'unknown';
     tr.append(t1, t2, t3, t4);
     au.appendChild(tr);
   }
 
   // metrics 表
-  const mt = el('pxMetrics');
+  const mt = document.getElementById('pxMetrics');
   mt.innerHTML = '';
   if (!px.metrics || !px.metrics.length) mt.innerHTML = '<tr><td colspan="3" class="empty">暂无流量</td></tr>';
   for (const m of px.metrics) {
@@ -1342,56 +991,45 @@ async function loadProxy() {
   }
 }
 
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 // 路由表单(null=新增;否则编辑既有)
 let editingRoute = null;
-function routeMode() {
-  const mode = document.querySelector('input[name=r_mode]:checked').value;
-  el('r_to').disabled = mode !== 'to';
-  el('r_service').disabled = mode !== 'service';
-  if (mode === 'service') el('r_to').value = '';
-  else el('r_service').value = '';
-}
 function openRouteForm(route) {
   editingRoute = route || null;
-  el('routeErr').textContent = '';
-  el('routeTitle').textContent = route ? '编辑路由:' + route.host : '新增路由';
-  el('r_host').value = route ? route.host : '';
-  el('r_host').disabled = !!route; // host 是键,改名=删旧建新
-  el('r_to').value = (route && route.to) || '';
-  el('r_ph').checked = !!(route && route.preserve_host);
+  document.getElementById('routeErr').textContent = '';
+  document.getElementById('routeTitle').textContent = route ? '编辑路由:' + route.host : '新增路由';
+  document.getElementById('r_host').value = route ? route.host : '';
+  document.getElementById('r_host').disabled = !!route; // host 是键,改名=删旧建新
+  document.getElementById('r_to').value = (route && route.to) || '';
+  document.getElementById('r_ph').checked = !!(route && route.preserve_host);
   // service 下拉(当前服务表)
-  const sel = el('r_service');
-  sel.innerHTML = '<option value="">(选择服务)</option>';
+  const sel = document.getElementById('r_service');
+  sel.innerHTML = '<option value="">(无)</option>';
   for (const s of currentList) {
     const opt = document.createElement('option');
     opt.value = s.name; opt.textContent = s.name;
     if (route && route.service === s.name) opt.selected = true;
     sel.appendChild(opt);
   }
-  // 模式回填:service 引用路由选中 service 单选
-  const mode = route && route.service ? 'service' : 'to';
-  document.querySelector('input[name=r_mode][value=' + mode + ']').checked = true;
-  routeMode();
-  el('routeOverlay').style.display = 'flex';
-  if (!route) focusFirst('routeOverlay');
-  else if (mode === 'to') { el('r_to').focus(); el('r_to').select(); }
-  else el('r_service').focus();
+  document.getElementById('routeOverlay').style.display = 'flex';
 }
 function closeRouteForm() {
-  el('routeOverlay').style.display = 'none';
+  document.getElementById('routeOverlay').style.display = 'none';
 }
 async function submitRouteForm() {
-  const host = el('r_host').value.trim().toLowerCase();
-  const mode = document.querySelector('input[name=r_mode]:checked').value;
-  const to = el('r_to').value.trim();
-  const service = el('r_service').value;
-  const preserve_host = el('r_ph').checked;
-  const err = el('routeErr');
+  const host = document.getElementById('r_host').value.trim().toLowerCase();
+  const to = document.getElementById('r_to').value.trim();
+  const service = document.getElementById('r_service').value;
+  const preserve_host = document.getElementById('r_ph').checked;
+  const err = document.getElementById('routeErr');
   if (!host) { err.textContent = 'host 必填'; return; }
-  const upstream = mode === 'to' ? to : service;
-  if (!upstream) { err.textContent = mode === 'to' ? '上游 URI 必填' : '请选择服务'; return; }
+  if (!to && !service) { err.textContent = 'to 与 service 二选一'; return; }
+  if (to && service) { err.textContent = 'to 与 service 只能配其一'; return; }
   const body = { host, preserve_host };
-  if (mode === 'to') body.to = to; else body.service = service;
+  if (to) body.to = to; else body.service = service;
   const url = editingRoute
     ? '/api/v1/proxy/routes/' + enc(editingRoute.host)
     : '/api/v1/proxy/routes';
@@ -1422,7 +1060,7 @@ async function deleteRoute(host) {
 // ── toast ────────────────────────────────────────────
 let toastTimer = null;
 function showToast(text, isErr) {
-  const t = el('toast');
+  const t = document.getElementById('toast');
   t.textContent = text;
   t.className = isErr ? 'show err' : 'show';
   clearTimeout(toastTimer);
@@ -1430,24 +1068,15 @@ function showToast(text, isErr) {
 }
 function togglePause() {
   paused = !paused;
-  el('pauseBtn').textContent = paused ? '▶ 继续' : '⏸ 暂停';
-  if (!paused) { newWhilePaused = 0; scrollBottom(); }
-  updatePill();
-}
-function toggleMax() {
-  el('main').classList.toggle('maxed');
+  document.getElementById('pauseBtn').textContent = paused ? '▶ 继续' : '⏸ 暂停';
+  if (!paused) scrollBottom();
 }
 
 // ── 启动 ─────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
-  el('tok').value = token;
-  updateTokClear();
-  // 页签标题带主机名:多台机器多页签可分辨
-  document.title = 'warden · ' + location.hostname;
-  setView(location.hash === '#/proxy');
-  loadPxInfo();
+  document.getElementById('tok').value = token;
   loadHealth(); loadServices();
-  svcTimer = setInterval(() => { loadHealth(); loadServices(); loadPxInfo(); if (pxOpen) loadProxy(); }, 2000);
+  svcTimer = setInterval(() => { loadHealth(); loadServices(); if (pxOpen) loadProxy(); }, 2000);
 });
 window.addEventListener('beforeunload', closeStream);
 </script>
