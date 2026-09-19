@@ -442,6 +442,8 @@ impl ProcHandle {
             priority: g.config.priority,
             ui_url: g.config.ui_url.clone(),
             config_file: g.config.config_file.clone(),
+            proxy: g.config.proxy,
+            subdomain: g.config.subdomain.clone(),
         }
     }
 
@@ -499,6 +501,10 @@ pub struct ServiceStatus {
     pub ui_url: Option<String>,
     /// 配置文件路径(桌面版「编辑」按钮;None = 禁用)。
     pub config_file: Option<String>,
+    /// 允许经反代域名暴露(auto 路由来源;反代引擎消费)。
+    pub proxy: bool,
+    /// 下级域名标签(缺省 name;已小写化存储,auto 路由匹配用)。
+    pub subdomain: Option<String>,
 }
 
 #[cfg(test)]
