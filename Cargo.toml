@@ -49,7 +49,16 @@ path = "tests/helpers/keys_probe.rs"
 
 [features]
 default = ["reverse-proxy"]
-reverse-proxy = ["dep:hyper", "dep:hyper-util", "dep:http-body-util"]
+reverse-proxy = [
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http-body-util",
+    "dep:rustls",
+    "dep:tokio-rustls",
+    "dep:hyper-rustls",
+    "dep:x509-parser",
+    "dep:webpki-roots",
+]
 
 [dependencies]
 # 与 rs-iot 同版本栈,便于统一维护
@@ -88,8 +97,17 @@ netstat2 = "0.11.2"
 strip-ansi-escapes = "0.2.1"
 # 反向代理引擎(reverse-proxy feature 门控;hyper-util legacy client 流式直传,D5)
 hyper = { version = "1", optional = true, features = ["client", "http1", "server"] }
-hyper-util = { version = "0.1", optional = true, features = ["client", "client-legacy", "http1", "tokio"] }
+hyper-util = { version = "0.1", optional = true, features = ["client", "client-legacy", "http1", "server", "tokio"] }
 http-body-util = { version = "0.1", optional = true }
+# P2 TLS 终止(ring 后端,避免 aws-lc-rs 的 cmake/nasm 编译依赖)
+rustls = { version = "0.23", optional = true, default-features = false, features = ["std", "ring", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", optional = true, default-features = false, features = ["ring", "tls12", "logging"] }
+# https 上游(与 rustls 同 0.23 栈;webpki 内置根 + 可选自定义 CA)
+hyper-rustls = { version = "0.27", optional = true, default-features = false, features = ["http1", "ring", "webpki-tokio"] }
+# P3 证书到期检测(解析 notAfter)
+x509-parser = { version = "0.18", optional = true, default-features = false }
+# 上游 https 验证的内置根(与 hyper-rustls 同源版本)
+webpki-roots = { version = "0.26", optional = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
@@ -97,6 +115,9 @@ tower = { version = "0.5", features = ["util"] }
 sha2 = "0.10"
 axum = { version = "0.8", features = ["ws"] }
 tokio-tungstenite = "0.29.0"
+# P2 TLS e2e:自签通配证书(rcgen 的 not_after 用 time crate 类型)
+rcgen = "0.14"
+time = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"

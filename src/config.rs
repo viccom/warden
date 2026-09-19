@@ -125,6 +125,43 @@ pub struct ProxyConfig {
     /// 显式路由表(与 auto 并存时显式优先)。
     #[serde(default, rename = "route")]
     pub routes: Vec<ProxyRoute>,
+    /// HTTPS 监听的证书链(PEM;P2 TLS 终止,与 key_file 成对)。
+    #[serde(default)]
+    pub cert_file: Option<String>,
+    /// HTTPS 监听的私钥(PEM;与 cert_file 成对)。
+    #[serde(default)]
+    pub key_file: Option<String>,
+    /// https 上游的自定义 CA(PEM;内网私有 CA 场景,缺省用 webpki 内置根)。
+    #[serde(default)]
+    pub upstream_ca_file: Option<String>,
+    /// 证书到期检测与可选续期(P3;外部托管协同,ACME 流程不在 warden 内)。
+    #[serde(default)]
+    pub acme: AcmeConfig,
+}
+
+/// P3:证书到期检测配置([proxy.acme])。
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+pub struct AcmeConfig {
+    /// 剩余天数低于此值 → 告警(tracing + alert_webhook);缺省 21。
+    #[serde(default = "default_expire_warn_days")]
+    pub expire_warn_days: u32,
+    /// 可选:到期前 warden 主动执行的外部续期命令(带超时与日志捕获);
+    /// 未配置则完全依赖外部托管侧(1Panel/acme.sh)自续期。
+    #[serde(default)]
+    pub renew_command: Option<String>,
+}
+
+impl Default for AcmeConfig {
+    fn default() -> Self {
+        Self {
+            expire_warn_days: default_expire_warn_days(),
+            renew_command: None,
+        }
+    }
+}
+
+fn default_expire_warn_days() -> u32 {
+    21
 }
 
 fn default_proxy_connect_timeout_ms() -> u64 {
@@ -181,6 +218,21 @@ pub fn validate_config_with_services(cfg: &Config, service_names: &[&str]) -> Ve
     let bind_empty = |b: &Option<String>| b.as_deref().map_or(true, |s| s.is_empty());
     if bind_empty(&p.http_bind) && bind_empty(&p.https_bind) {
         warns.push("[proxy] http_bind 与 https_bind 均为空,反代无监听地址".into());
+    }
+    // TLS 证书对完整性(P2):https_bind 启用须有成对 cert/key;只配一半无法构建 acceptor
+    let cert_empty = p.cert_file.as_deref().map_or(true, |s| s.is_empty());
+    let key_empty = p.key_file.as_deref().map_or(true, |s| s.is_empty());
+    if !bind_empty(&p.https_bind) && (cert_empty || key_empty) {
+        warns.push(
+            "[proxy] https_bind 已配置但 cert_file/key_file 证书对缺失或不成对,TLS 监听无法启动(降级 http 直转)"
+                .into(),
+        );
+    }
+    if (cert_empty ^ key_empty) && bind_empty(&p.https_bind) {
+        warns.push(
+            "[proxy] cert_file 与 key_file 须成对配置(当前只配其一,https_bind 未配置则不生效)"
+                .into(),
+        );
     }
     if let Some(d) = p.domain.as_deref() {
         if d.is_empty() || d.contains(['/', '\\', ':', '*']) {
@@ -1043,6 +1095,89 @@ subdomain = "FS2"
                 errs.iter()
                     .any(|e| e.contains("domain") && e.contains("非法")),
                 "domain '{domain}' 应告警非法,实际:{errs:?}"
+            );
+        }
+    }
+
+    // ── P2/P3:TLS 与证书检测配置 ─────────────────────────────────
+
+    /// 意图:TLS 终止三件套(https_bind/cert_file/key_file)与 https 上游
+    /// 自定义 CA 路径必须可解析透传。
+    #[test]
+    fn proxy_tls_fields_parse() {
+        let toml = r#"
+[proxy]
+domain = "x.example.com"
+http_bind = "0.0.0.0:8080"
+https_bind = "0.0.0.0:8443"
+cert_file = "/ssl/fullchain.pem"
+key_file = "/ssl/privkey.pem"
+upstream_ca_file = "/ssl/ca.pem"
+"#;
+        let p = Config::parse(toml).unwrap().proxy.unwrap();
+        assert_eq!(p.https_bind.as_deref(), Some("0.0.0.0:8443"));
+        assert_eq!(p.cert_file.as_deref(), Some("/ssl/fullchain.pem"));
+        assert_eq!(p.key_file.as_deref(), Some("/ssl/privkey.pem"));
+        assert_eq!(p.upstream_ca_file.as_deref(), Some("/ssl/ca.pem"));
+    }
+
+    /// 意图:[proxy.acme] 缺省时 expire_warn_days=21、renew_command=None;
+    /// 显式配置时透传(P3 两形态:外部托管只检测 / warden 主动续期)。
+    #[test]
+    fn proxy_acme_defaults_and_parse() {
+        let p = Config::parse("[proxy]\nhttp_bind = \"0.0.0.0:8080\"\n")
+            .unwrap()
+            .proxy
+            .unwrap();
+        assert_eq!(p.acme.expire_warn_days, 21, "缺省告警阈值 21 天");
+        assert!(p.acme.renew_command.is_none());
+
+        let p = Config::parse(
+            "[proxy]\nhttp_bind = \"0.0.0.0:8080\"\n\
+             [proxy.acme]\nexpire_warn_days = 14\nrenew_command = \"acme.sh -- renew\"\n",
+        )
+        .unwrap()
+        .proxy
+        .unwrap();
+        assert_eq!(p.acme.expire_warn_days, 14);
+        assert_eq!(p.acme.renew_command.as_deref(), Some("acme.sh -- renew"));
+    }
+
+    /// 意图:https_bind 已配但证书对缺失 → TLS 无法启动,必须 warn
+    /// (运行时降级为 http 直转,用户需知情)。
+    #[test]
+    fn validate_proxy_warns_https_bind_without_cert() {
+        let toml = "[proxy]\ndomain = \"x.example.com\"\nhttp_bind = \"0.0.0.0:8080\"\nhttps_bind = \"0.0.0.0:8443\"\n";
+        let r = Config::parse(toml).unwrap();
+        let errs = validate_config(&r);
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("https_bind") && e.contains("证书")),
+            "https_bind 无证书对应有告警,实际:{errs:?}"
+        );
+    }
+
+    /// 意图:证书对只配一半(cert 无 key / key 无 cert)→ 无法构建 acceptor,必须 warn。
+    #[test]
+    fn validate_proxy_warns_cert_key_pair_incomplete() {
+        for (cert, key) in [
+            (Some("/ssl/fullchain.pem"), None),
+            (None, Some("/ssl/privkey.pem")),
+        ] {
+            let mut toml =
+                String::from("[proxy]\ndomain = \"x.example.com\"\nhttp_bind = \"0.0.0.0:8080\"\n");
+            if let Some(c) = cert {
+                toml += &format!("cert_file = \"{c}\"\n");
+            }
+            if let Some(k) = key {
+                toml += &format!("key_file = \"{k}\"\n");
+            }
+            let r = Config::parse(&toml).unwrap();
+            let errs = validate_config(&r);
+            assert!(
+                errs.iter()
+                    .any(|e| e.contains("cert_file") && e.contains("key_file")),
+                "证书对不完整应有告警,实际:{errs:?}"
             );
         }
     }

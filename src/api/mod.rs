@@ -35,6 +35,13 @@ pub struct AppState {
     pub data_dir: PathBuf,
     /// 配置文件写互斥锁(CRUD 进程内单写者,防并发编辑交错)。
     pub config_edit_lock: Arc<Mutex<()>>,
+    /// 反代路由热更新句柄([proxy] 段存在才有;reload/路由 CRUD 写,
+    /// 引擎每请求读——显式路由/domain/preserve_host 免重启生效)。
+    #[cfg(feature = "reverse-proxy")]
+    pub proxy_shared: Option<crate::proxy::SharedProxyConfig>,
+    /// 反代路由级 metrics(引擎写,API 读)。
+    #[cfg(feature = "reverse-proxy")]
+    pub proxy_metrics: Arc<crate::proxy::ProxyMetrics>,
 }
 
 impl AppState {
@@ -70,6 +77,11 @@ pub fn build_state(cfg: Config, config_path: Option<PathBuf>) -> AppState {
     } else {
         Some(cfg.daemon.auth_token.clone())
     };
+    #[cfg(feature = "reverse-proxy")]
+    let proxy_shared = cfg
+        .proxy
+        .as_ref()
+        .map(|p| crate::proxy::shared_from(p.clone()));
     AppState {
         supervisor,
         config_path,
@@ -78,6 +90,10 @@ pub fn build_state(cfg: Config, config_path: Option<PathBuf>) -> AppState {
         title: cfg.daemon.title.clone(),
         data_dir,
         config_edit_lock: Arc::new(Mutex::new(())),
+        #[cfg(feature = "reverse-proxy")]
+        proxy_shared,
+        #[cfg(feature = "reverse-proxy")]
+        proxy_metrics: Arc::new(crate::proxy::ProxyMetrics::new()),
     }
 }
 

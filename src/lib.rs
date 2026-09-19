@@ -131,29 +131,97 @@ pub async fn serve_with_shutdown(
     let state = api::build_state(cfg, config_path);
     state.supervisor.start_auto().await;
 
-    // 反向代理:绑 http_bind(https_bind 属 P2);绑定失败不致命——
-    // 监护/API 是 daemon 核心,反代是附加能力,降级为 error 日志继续
+    // 反向代理(P2):https(TLS 终止 + 证书热重载 + 到期检测)+ http
+    // (转发,或 https 已启动时全量 301)。绑定失败不致命——监护/API 是
+    // daemon 核心,反代是附加能力,降级为 error 日志继续。
     #[cfg(feature = "reverse-proxy")]
-    let mut proxy_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut proxy_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     #[cfg(feature = "reverse-proxy")]
     if let Some(pc) = proxy_launch {
+        use crate::proxy::{self, tls, HostRouter, HttpEntry, ProxyState};
+        let empty = |s: &Option<String>| s.as_deref().map_or(true, str::is_empty);
+        // https 入口先行(是否成功决定 http 是转发还是 301)
+        let mut https_port: Option<u16> = None;
+        let wants_https = !empty(&pc.https_bind) && !empty(&pc.cert_file) && !empty(&pc.key_file);
+        if wants_https {
+            let bind = pc.https_bind.clone().unwrap_or_default();
+            let cert = std::path::PathBuf::from(pc.cert_file.clone().unwrap_or_default());
+            let key = std::path::PathBuf::from(pc.key_file.clone().unwrap_or_default());
+            let attempt = async {
+                let listener = TcpListener::bind(&bind).await?;
+                let port = listener.local_addr()?.port();
+                let reloader = std::sync::Arc::new(
+                    tls::CertReloader::new(&cert, &key).map_err(|e| anyhow::anyhow!(e))?,
+                );
+                Ok::<_, anyhow::Error>((listener, port, reloader))
+            };
+            match attempt.await {
+                Ok((listener, port, reloader)) => {
+                    let shared = state
+                        .proxy_shared
+                        .clone()
+                        .expect("proxy_shared 与 [proxy] 段同生");
+                    let state_tls = std::sync::Arc::new(ProxyState {
+                        router: HostRouter::new(shared, state.supervisor.clone()),
+                        client: proxy::build_client(&pc),
+                        scheme: "https",
+                        metrics: state.proxy_metrics.clone(),
+                    });
+                    proxy_tasks.push(tls::spawn_tls_serve(
+                        listener,
+                        reloader.clone(),
+                        state_tls,
+                        shutdown.clone(),
+                    ));
+                    proxy_tasks.push(tls::spawn_cert_reload(
+                        reloader,
+                        tls::CERT_RELOAD_PERIOD,
+                        shutdown.clone(),
+                    ));
+                    // P3:到期检测(证书路径与 acme 配置;webhook 复用 daemon 告警)
+                    proxy_tasks.push(tls::spawn_cert_expiry(
+                        cert,
+                        pc.acme.clone(),
+                        alert_webhook.clone(),
+                        shutdown.clone(),
+                    ));
+                    tracing::info!("[warden] 反代 https 已启动:{bind}");
+                    https_port = Some(port);
+                }
+                Err(e) => {
+                    tracing::error!("[warden] 反代 https 启动失败({bind}):{e:?}(降级 http 直转)");
+                }
+            }
+        }
         match pc.http_bind.as_deref() {
             Some(bind) if !bind.is_empty() => match TcpListener::bind(bind).await {
                 Ok(l) => {
-                    proxy_task = Some(crate::proxy::spawn(
-                        pc,
-                        state.supervisor.clone(),
-                        l,
-                        shutdown.clone(),
-                    ));
+                    let entry = match https_port {
+                        Some(port) => HttpEntry::RedirectHttps { port },
+                        None => {
+                            let shared = state
+                                .proxy_shared
+                                .clone()
+                                .expect("proxy_shared 与 [proxy] 段同生");
+                            let state_http = std::sync::Arc::new(ProxyState {
+                                router: HostRouter::new(shared, state.supervisor.clone()),
+                                client: proxy::build_client(&pc),
+                                scheme: "http",
+                                metrics: state.proxy_metrics.clone(),
+                            });
+                            HttpEntry::Forward(state_http)
+                        }
+                    };
+                    proxy_tasks.push(proxy::spawn_http(l, entry, shutdown.clone()));
                 }
                 Err(e) => {
                     tracing::error!("[warden] 反代监听 {bind} 绑定失败:{e}(忽略,继续监护/API)")
                 }
             },
-            _ => tracing::warn!(
-                "[warden] [proxy] 段存在但未配置 http_bind,反代不监听(https_bind 属 P2)"
+            _ if https_port.is_none() => tracing::warn!(
+                "[warden] [proxy] 段存在但未配置 http_bind,http 不监听(https 见上方日志)"
             ),
+            _ => {}
         }
     }
     state
@@ -202,11 +270,11 @@ pub async fn serve_with_shutdown(
 
     // 等 stop_all 完成(子进程 graceful 收尾),再退出
     let _ = stop_task.await;
-    // 反代 drain(15s 上限)独立于 API 5s:两组并行等待,总退出 = max(两链)
+    // 反代 drain(15s 上限)独立于 API 5s:各组并行等待,总退出 = max(各链)
     // (设计 §4.5——不 await 会随主流程退出被 runtime 硬杀,在途代理连接/WS
     //  隧道实际只剩 API 的 5s 上限,与设计相悖)
     #[cfg(feature = "reverse-proxy")]
-    if let Some(t) = proxy_task {
+    for t in proxy_tasks {
         let _ = t.await;
     }
     tracing::info!("[warden] 已退出");

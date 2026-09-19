@@ -44,6 +44,10 @@ async fn spawn_proxy_with(routes: Vec<ProxyRoute>, services: Vec<ServiceConfig>)
         https_bind: None,
         connect_timeout_ms: 2000,
         preserve_host: false,
+        cert_file: None,
+        key_file: None,
+        upstream_ca_file: None,
+        acme: Default::default(),
         routes,
     };
     let supervisor = Arc::new(Supervisor::new(std::path::PathBuf::from("")));

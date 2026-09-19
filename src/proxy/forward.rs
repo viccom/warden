@@ -75,8 +75,11 @@ pub fn rewrite_headers(
         headers.insert("x-forwarded-for", v);
     }
     // 5. X-Forwarded-Proto / X-Forwarded-Host
-    if let Ok(v) = HeaderValue::from_str(scheme) {
-        headers.insert("x-forwarded-proto", v);
+    // XFP:前置代理(TLS 终止方)已注入则透传(链式语义);无才注入自身 scheme
+    if headers.get("x-forwarded-proto").is_none() {
+        if let Ok(v) = HeaderValue::from_str(scheme) {
+            headers.insert("x-forwarded-proto", v);
+        }
     }
     if let Some(orig) = original_host {
         if let Ok(v) = HeaderValue::from_str(&orig) {
@@ -190,6 +193,52 @@ pub async fn proxy_handler(
         return websocket_tunnel(&state, req, &client, &upstream, preserve_host, &log).await;
     }
     forward_to(&state, req, &client, &upstream, preserve_host, &log).await
+}
+
+/// http → https 301 入口(80/443 同配时 http listener 全量重定向)。
+/// Host 经规范化+字符白名单校验后进 Location(防 Host 注入);入站端口剥离,
+/// 目标端口取 https 配置(443 不附加)。
+pub async fn redirect_to_https(
+    State(port): State<u16>,
+    req: Request<axum::body::Body>,
+) -> Response<axum::body::Body> {
+    let host_hdr = req
+        .headers()
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let host = crate::proxy::router::HostRouter::normalize_host(&host_hdr);
+    if host.is_empty()
+        || !host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        return error_page(StatusCode::BAD_REQUEST, &host_hdr, "请求 Host 头非法");
+    }
+    let pq = req
+        .uri()
+        .path_and_query()
+        .map(|p| p.as_str())
+        .unwrap_or("/");
+    let authority = if port == 443 {
+        host
+    } else {
+        format!("{host}:{port}")
+    };
+    let location = format!("https://{authority}{pq}");
+    match Response::builder()
+        .status(StatusCode::MOVED_PERMANENTLY)
+        .header("location", &location)
+        .body(axum::body::Body::empty())
+    {
+        Ok(resp) => resp,
+        Err(e) => error_page(
+            StatusCode::BAD_REQUEST,
+            &host_hdr,
+            &format!("构造重定向失败:{e}"),
+        ),
+    }
 }
 
 /// WebSocket 升级检测:Upgrade 头含 websocket 令牌(RFC 7230 允许逗号分隔
@@ -340,7 +389,7 @@ async fn websocket_tunnel(
             }
         }
         Err(e) => {
-            let detail = format!("上游连接失败({upstream}):{e}");
+            let detail = format!("上游连接失败({upstream}):{}", error_chain(&e));
             log.emit(StatusCode::BAD_GATEWAY, upstream);
             error_page(StatusCode::BAD_GATEWAY, &log.host, &detail)
         }
@@ -414,7 +463,7 @@ async fn forward_to(
             }
         }
         Err(e) => {
-            let detail = format!("上游连接失败({upstream}):{e}");
+            let detail = format!("上游连接失败({upstream}):{}", error_chain(&e));
             log.emit(StatusCode::BAD_GATEWAY, upstream);
             error_page(StatusCode::BAD_GATEWAY, &log.host, &detail)
         }
@@ -446,6 +495,18 @@ fn is_hop_by_hop(name: &str) -> bool {
     HOP_BY_HOP.iter().any(|h| name.eq_ignore_ascii_case(h))
         || name.eq_ignore_ascii_case("content-length")
         || name.eq_ignore_ascii_case("transfer-encoding")
+}
+
+/// 错误链展开(上游连接失败时 hyper-util 顶层 Display 极浅,如
+/// "client error (Connect)";真实原因——DNS/超时/TLS 验证——在 source 里)。
+fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut s = e.to_string();
+    let mut cur = e.source();
+    while let Some(c) = cur {
+        s.push_str(&format!(": {c}"));
+        cur = c.source();
+    }
+    s
 }
 
 /// HTML 实体转义(错误页插值点防注入:host/detail 来自客户端输入)。
@@ -578,6 +639,25 @@ mod tests {
         rewrite_headers(&mut h, "203.0.113.5", "upstream:8080", "https", false);
         assert_eq!(h.get("x-forwarded-proto").unwrap(), "https");
         assert_eq!(h.get("x-forwarded-host").unwrap(), "a.example.com");
+    }
+
+    /// 意图:前置代理(如 OpenResty TLS 终止)已注入 X-Forwarded-Proto 时,
+    /// warden 作为链上后置代理必须透传该值,不得用自身 scheme(明文 http)覆盖——
+    /// 否则上游 OAuth 回调/Secure Cookie/CSP 拿到错误的客户端协议。
+    #[test]
+    fn preserves_existing_xfp_from_front_proxy() {
+        let mut h = build();
+        h.insert("x-forwarded-proto", "https".parse().unwrap());
+        rewrite_headers(&mut h, "203.0.113.5", "upstream:8080", "http", false);
+        assert_eq!(
+            h.get("x-forwarded-proto").unwrap(),
+            "https",
+            "已有 XFP(前置 TLS 终止)应透传,不被自身 scheme 覆盖"
+        );
+        // 无 XFP 时行为不变:注入自身 scheme
+        let mut h2 = build();
+        rewrite_headers(&mut h2, "203.0.113.5", "upstream:8080", "http", false);
+        assert_eq!(h2.get("x-forwarded-proto").unwrap(), "http");
     }
 
     /// 意图:RFC 7230 允许 Upgrade 头逗号分隔列多协议,websocket 不必是

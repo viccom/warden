@@ -6,9 +6,11 @@
 //! 3. auto:<sub>.<domain> 且 sub 命中某 proxy=true 服务的 subdomain → AutoService
 //! 4. 全不中 → NotFound(调用方返回 421)
 
-use crate::config::ProxyConfig;
-use crate::supervisor::Supervisor;
 use std::sync::Arc;
+
+use crate::config::ProxyConfig;
+use crate::proxy::SharedProxyConfig;
+use crate::supervisor::Supervisor;
 
 /// 路由解析结果。
 pub enum Decision {
@@ -25,15 +27,20 @@ pub enum Decision {
     NotFound,
 }
 
-/// Host 路由器:显式路由表(配置快照)+ auto 分支(经 Supervisor 实时查询)。
+/// Host 路由器:显式路由表(共享配置,热更新)+ auto 分支(经 Supervisor 实时查询)。
 pub struct HostRouter {
-    cfg: ProxyConfig,
+    cfg: SharedProxyConfig,
     supervisor: Arc<Supervisor>,
 }
 
 impl HostRouter {
-    pub fn new(cfg: ProxyConfig, supervisor: Arc<Supervisor>) -> Self {
+    pub fn new(cfg: SharedProxyConfig, supervisor: Arc<Supervisor>) -> Self {
         Self { cfg, supervisor }
+    }
+
+    /// 当前配置快照(读锁拷 Arc,每请求一次,开销可忽略)。
+    fn cfg(&self) -> Arc<ProxyConfig> {
+        self.cfg.read().expect("proxy 配置锁中毒").clone()
     }
 
     /// 规范化 host:转小写、剥离 `:port`。
@@ -47,11 +54,12 @@ impl HostRouter {
 
     /// 解析路由决策(host 须已 normalize;未 normalize 会被先规范化)。
     pub fn resolve(&self, host: &str) -> Decision {
+        let cfg = self.cfg();
         let host = Self::normalize_host(host);
-        match Self::resolve_explicit(&self.cfg, &host) {
+        match Self::resolve_explicit(&cfg, &host) {
             Decision::NotFound => Self::resolve_auto(
                 &host,
-                self.cfg.domain.as_deref().unwrap_or(""),
+                cfg.domain.as_deref().unwrap_or(""),
                 &self.exposed_services(),
             )
             .map(|name| Decision::AutoService { name })
@@ -62,7 +70,7 @@ impl HostRouter {
 
     /// 全局 preserve_host(auto 路由无路由级覆盖,取全局配置)。
     pub fn global_preserve_host(&self) -> bool {
-        self.cfg.preserve_host
+        self.cfg().preserve_host
     }
 
     /// supervisor 引用(转发层解析服务引用路由的 ui_url/状态)。
@@ -168,6 +176,10 @@ mod tests {
             https_bind: None,
             connect_timeout_ms: 5000,
             preserve_host: false,
+            cert_file: None,
+            key_file: None,
+            upstream_ca_file: None,
+            acme: Default::default(),
             routes: routes
                 .iter()
                 .map(|(h, t)| ProxyRoute {
@@ -178,7 +190,10 @@ mod tests {
                 })
                 .collect(),
         };
-        HostRouter::new(cfg, Arc::new(Supervisor::new(std::path::PathBuf::from(""))))
+        HostRouter::new(
+            crate::proxy::shared_from(cfg),
+            Arc::new(Supervisor::new(std::path::PathBuf::from(""))),
+        )
     }
 
     #[test]
@@ -246,6 +261,10 @@ mod tests {
             https_bind: None,
             connect_timeout_ms: 5000,
             preserve_host: false,
+            cert_file: None,
+            key_file: None,
+            upstream_ca_file: None,
+            acme: Default::default(),
             routes: vec![ProxyRoute {
                 host: "a.x.com".into(),
                 to: None,
