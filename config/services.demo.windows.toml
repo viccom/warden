@@ -1,0 +1,44 @@
+# warden 开箱即用示例(Windows)
+#
+# 发行包里本文件被命名为 config/services.toml —— 放在 warden.exe 同级的 config/
+# 目录下会被自动发现(查找链第 2 级),所以解压后直接 `warden.exe run` 即可。
+#
+# 用法(在包根目录的 PowerShell / cmd 里):
+#   .\warden.exe run                                  # 自动发现 config\services.toml
+#   .\warden.exe run --config config\services.toml    # 显式指定(等价)
+#   curl.exe http://127.0.0.1:8789/api/v1/health      # 探活(浏览器打开同地址是 Web UI)
+#
+# 全字段参考与生产模板:config\services.example.toml
+# AI Agent 操作手册:AGENT-GUIDE.md
+
+[daemon]
+api_bind   = "127.0.0.1:8789"   # HTTP API + 内置 Web UI 监听地址
+auth_token = ""                 # 留空 = 不鉴权(仅适合本机/内网);对外暴露前务必设置
+data_dir   = "./data"           # 运行数据根目录(相对配置基准目录,即包根)
+log_dir    = "./logs"           # warden 自身日志目录(按日滚动)
+
+# ── 演示 1:持续 ping 本机(等价"常驻进程")──────────────────────
+# 验证:日志采集(API 读日志)、优雅停止(CTRL-C 后进程组被回收)。
+[[service]]
+name                  = "demo-ping"
+display_name          = "心跳演示"
+description           = "持续 ping 127.0.0.1;验证日志采集与优雅停止"
+command               = "ping"          # 走 PATH 查找(等价 C:\Windows\System32\ping.exe)
+args                  = ["-t", "127.0.0.1"]
+auto_start            = true    # daemon 启动时自动拉起
+auto_restart          = true    # 崩溃后按退避策略重启(默认 1s 起 ×2,上限 60s)
+graceful_timeout_secs = 5       # 发 CTRL_BREAK 后等 5s,超时强杀整棵进程树
+# output_encoding = "gbk"       # 中文 Windows 控制台程序输出乱码时打开(gbk/cp936)
+
+# ── 演示 2:监听端口的真实服务(需本机有 Python)──────────────────
+# 验证:端口发现(listening_ports)、TCP 健康检查(health)、UI 直达按钮(ui_url)。
+# 去掉下面 [[service]] 到 health 行的注释即可启用。
+#
+# [[service]]
+# name         = "demo-http"
+# display_name = "静态文件服务"
+# command      = "python"
+# args         = ["-m", "http.server", "18080", "--bind", "127.0.0.1"]
+# auto_start   = true
+# ui_url       = "http://127.0.0.1:18080"                                  # UI「打开」按钮
+# health       = { type = "tcp", host = "127.0.0.1", port = 18080, timeout_ms = 2000, interval_secs = 5 }

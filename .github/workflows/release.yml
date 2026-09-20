@@ -1,6 +1,9 @@
 name: Release
 
-# 推送 v* 或纯数字版本标签(如 0.2.0)触发:双平台构建 → 自动创建 GitHub Release 并附带产物
+# 推送 v* 或纯数字版本标签(如 0.2.0)触发:双平台构建 → 自动创建 GitHub Release 并附带产物。
+# 产物:裸二进制(warden[-desktop]-<tag>-<platform>)
+#     + CLI 开箱发行包 warden-<ver>-cli-<platform>.tar.gz / .zip(含配置示例与 AGENT-GUIDE.md)
+#     + 各自 .sha256
 on:
   push:
     tags: ["v*", "[0-9]+.*"]
@@ -29,13 +32,19 @@ jobs:
           mkdir -p dist
           cp target/release/warden.exe dist/warden-${{ github.ref_name }}-x86_64-windows.exe
           cp target/release/warden-desktop.exe dist/warden-desktop-${{ github.ref_name }}-x86_64-windows.exe
+      # CLI 开箱发行包(二进制 + 配置示例 + AGENT-GUIDE.md + README),内含 --version 冒烟
+      - name: Package CLI distribution
+        shell: bash
+        run: ./scripts/package-cli-dist.sh --tag "${{ github.ref_name }}" --platform windows-x86_64 --bin-dir target/release --out dist
       - uses: actions/upload-artifact@v4
         with:
           name: windows
           path: dist/
 
   build-linux:
-    runs-on: ubuntu-latest
+    # 固定 22.04 而非 ubuntu-latest:glibc 向下兼容,构建基线越老产出的二进制可跑的系统越多
+    # (24.04 构建的二进制要求 glibc ≥ 2.39,22.04 仅要求 ≥ 2.35 → 覆盖 Debian 12 / RHEL 9 / Ubuntu 22.04)
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -46,6 +55,8 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/warden dist/warden-${{ github.ref_name }}-x86_64-linux
+      - name: Package CLI distribution
+        run: ./scripts/package-cli-dist.sh --tag "${{ github.ref_name }}" --platform linux-x86_64 --bin-dir target/release --out dist
       - uses: actions/upload-artifact@v4
         with:
           name: linux

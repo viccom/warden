@@ -68,6 +68,27 @@ priority     = 1
 
 完整字段见 `config/services.example.toml`;演示配置见 `config/services.*.toml`。
 
+## 发行包(免构建)
+
+官方 Release 提供两种形态:裸二进制(`warden-<tag>-x86_64-{linux,windows}`)与**开箱 CLI 发行包**:
+
+- `warden-<ver>-cli-x86_64-linux.tar.gz` / `warden-<ver>-cli-x86_64-windows.zip`(各附 `.sha256`)
+- 内容:二进制 + `config/services.toml`(平台化开箱配置)+ `config/services.example.toml`(全字段参考)
+  + `AGENT-GUIDE.md`(完整使用手册)+ `README.md` + `LICENSE`
+- 用法:解压后 `cd warden-<ver>-cli-<platform> && ./warden run`(Windows `.\warden.exe run`)——
+  二进制同级的 `config/services.toml` 会被自动发现,零参数启动
+
+自己打一份(默认从 Release 下载对应版本二进制组装;`--bin-dir` 改用本地构建产物):
+
+```bash
+./scripts/package-cli-dist.sh                 # → dist/*.tar.gz + *.zip + *.sha256
+./scripts/package-cli-dist.sh --bin-dir target/release --platform linux-x86_64
+```
+
+> Linux 二进制依赖 glibc `>= 2.39`(0.3.0 及更早,构建于 Ubuntu 24.04);
+> 后续版本改用 ubuntu-22.04 构建基线(glibc `>= 2.35`,覆盖 Debian 12 / RHEL 9 / Ubuntu 22.04)。
+> 更老的系统请源码构建(`cargo build --release --jobs 6`)。
+
 ## 形态
 
 | 形态 | 命令 | 说明 |
@@ -91,6 +112,7 @@ cd desktop && pnpm install && pnpm tauri build --no-bundle
 
 ## 文档
 
+- [`docs/AGENT-GUIDE.md`](./docs/AGENT-GUIDE.md) —— **面向使用者/自动化**的完整手册:CLI + 配置全字段 + HTTP API + 排障 + AI Agent 操作约定(随发行包分发)
 - [`docs/DESIGN.md`](./docs/DESIGN.md) —— 架构、数据模型、API 与关键决策(权威参考)
 - [`docs/ROADMAP.md`](./docs/ROADMAP.md) —— 分 Phase 进度与变更日志
 - [`docs/PLAN-REVERSE-PROXY.md`](./docs/PLAN-REVERSE-PROXY.md) —— 反向代理实施方案(决策 D1-D13,已实施)

@@ -4,6 +4,8 @@
 *.log
 *.rs.bk
 /.zcode
+# CLI 发行包产物(scripts/package-cli-dist.sh 生成)
+/dist
 
 # 桌面版(Tauri)前端构建产物与依赖
 /desktop/node_modules

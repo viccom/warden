@@ -34,6 +34,8 @@ warden 是一个 **Rust 进程监护管理工具**(supervisord / pm2 风格的 s
 
 **跨会话接续**:`docs/ROADMAP.md`(进度 checklist + 下一步 + 已知局限 + 变更日志)是入口,新会话**先读它**;`docs/DESIGN.md` 是设计权威(架构/数据模型/API/状态机/决策)。
 
+**面向部署使用者的文档**:`docs/AGENT-GUIDE.md`(CLI/配置全字段/HTTP API/排障/AI Agent 操作约定;随 CLI 发行包分发)——**改 API、配置字段或 CLI 行为时必须同步更新它**,否则手册与实现脱节。开箱演示配置 `config/services.demo.{linux,windows}.toml`,打包时改名为 `services.toml` 放进二进制同级 `config/`(命中查找链第 2 级 → 零参数启动)。
+
 ## 常用命令
 
 ```bash
@@ -65,6 +67,10 @@ curl http://127.0.0.1:8789/api/v1/proxy                       # 状态/domain/bi
 curl -X POST  http://127.0.0.1:8789/api/v1/proxy/routes       # 新增路由 {host,to|service,preserve_host?}
 curl -X PUT    http://127.0.0.1:8789/api/v1/proxy/routes/<host>
 curl -X DELETE http://127.0.0.1:8789/api/v1/proxy/routes/<host>
+
+# CLI 发行包组装(dist/ 已 gitignore;默认下载 Release 资产,--bin-dir 用本地构建产物):
+./scripts/package-cli-dist.sh                                              # 双平台 → dist/*.tar.gz|*.zip + .sha256
+./scripts/package-cli-dist.sh --bin-dir target/release --platform linux-x86_64 --out /tmp/pkg
 ```
 
 ## 编码约定
@@ -85,6 +91,7 @@ curl -X DELETE http://127.0.0.1:8789/api/v1/proxy/routes/<host>
 - 改 API(`api/`):跑 `tests/api_flow.rs`(`tower::ServiceExt::oneshot` 打 `build_router`,含鉴权拒绝/放行 + health 白名单)。
 - 改配置语义(`config.rs`):跑 `config::tests`(解析/Default/坏项跳过/覆盖)。
 - 改 Web UI(`web/index.html`):`include_str!` 编译期嵌入,**改后必须重新 `cargo build` 才生效**(运行中的 daemon 不热加载);JS 预检可提取 `<script>` 段过 `node --check`。
+- 改发行包组成(`scripts/package-cli-dist.sh` / `packaging/cli/README.md` / `config/services.demo.*.toml` / `docs/AGENT-GUIDE.md`):跑 `./scripts/package-cli-dist.sh --bin-dir target/release --out /tmp/pkg` 验证产物结构与 `--version` 冒烟(需先 `cargo build --release --jobs 6`);`.github/workflows/release.yml` 的发包步骤只在打 tag 时执行,平时改动无法本地验证,汇报时须显式声明。
 - 新增逻辑补 `#[cfg(test)]` 内联单测或 `tests/` 集成测试。集成测试用 `tests/common`(`long_runner`/`quick_fail` 跨平台无害命令),**勿固定端口、勿写仓库 `./data/`/`./logs/`**。
 - **进程树语义(必读)**:每个子进程一个 Job Object(Windows,`KILL_ON_JOB_CLOSE`)。`stop` = 优雅信号(CTRL_BREAK/SIGTERM)→ `graceful_timeout_secs` 超时 → `TerminateJobObject` 强杀**整棵进程树**(含孙进程);warden 自身崩溃/退出时子进程树全死,无孤儿。测试可放心覆盖孙进程场景(`port_listener_target --grandchild`)。
 
