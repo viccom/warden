@@ -48,6 +48,11 @@
   /* 全局危险 hover(服务卡与反代表格共用;.del 不再限定 .svc .acts 作用域) */
   button.del { border-color: rgba(255,107,129,.45); color: var(--red); }
   button.del:hover { border-color: var(--red); color: var(--red); background: rgba(255,107,129,.10); }
+  .quicknav { display: flex; gap: 6px; align-items: center; }
+  .quicknav .qn-label { color: var(--muted); font-size: 12px; }
+  .quicknav a { font-size: 12px; color: var(--blue); text-decoration: none;
+                padding: 2px 10px; border: 1px solid var(--border); border-radius: 999px; }
+  .quicknav a:hover { border-color: var(--blue); background: rgba(90,167,255,.10); }
   .token { display: flex; gap: 8px; align-items: center; }
   .token input { background: var(--bg); border: 1px solid var(--border); color: var(--text);
                  padding: 8px 12px; border-radius: 8px; font-family: inherit; font-size: 14px; width: 190px; outline: none; }
@@ -261,6 +266,7 @@
     <span class="stat clickable" id="count" title="点击只看异常服务" onclick="toggleFailOnly()"></span>
   </div>
   <div class="grow"></div>
+  <nav id="quicknav" class="quicknav" aria-label="站点直达" style="display:none"></nav>
   <button class="btn" id="pxBtn" onclick="toggleProxyView()">反向代理</button>
   <div class="token">
     <input id="tok" type="password" placeholder="token(可选)">
@@ -573,6 +579,25 @@ async function loadPxInfo() {
     const p = await api('/api/v1/proxy');
     pxInfo = p;
   } catch (_) { pxInfo = { enabled: false }; }
+  renderQuickNav();
+}
+/**
+ * 对外访问链接的 scheme/port 取浏览器当前地址,而非 warden 自身 bind:
+ * 生产链路为 前置代理(OpenResty 终止 TLS)→ warden(纯 http 回环入口),
+ * bind(如 127.0.0.1:8080)不代表外部可达地址;同一域名体系下各子域的
+ * scheme/port 相同,当前页地址就是答案。浏览器地址不在域名体系内时
+ * (如直连入口调试),inDomain=false,调用方回退按 bind 拼。
+ */
+function pxExternalBase() {
+  const loc = window.location;
+  const inDomain = !!(pxInfo.domain &&
+    (loc.hostname === pxInfo.domain || loc.hostname.endsWith('.' + pxInfo.domain)));
+  return {
+    scheme: loc.protocol.replace(':', ''),
+    portSuffix: loc.port ? ':' + loc.port : '',
+    hostname: loc.hostname,
+    inDomain,
+  };
 }
 function pxListenPort(preferHttps) {
   const pick = (bind) => { const m = bind && /:(\d+)$/.exec(bind); return m ? +m[1] : null; };
@@ -582,20 +607,24 @@ function pxListenPort(preferHttps) {
   return null;
 }
 /**
- * WEB 按钮目标 URL(新需求):
+ * WEB 按钮目标 URL:
  * - 前提:服务定义了 ui_url(未定义 → 按钮禁用)
  * - 引擎运行 + 服务勾选「经反代域名暴露」+ 配了 domain → 域名方式:
- *   https://<subdomain|name>.<domain>:<https 端口><ui_url 的路径部分>
+ *   浏览器在域名体系内 → <当前 scheme>://<sub>.<domain><当前 port><ui_url 路径>
+ *   (前置代理 TLS 场景由此得到 https://sub.domain,而非错误的 http://...:8080)
+ *   否则回退:按 warden 自身 bind 拼(直连入口场景)
  * - 否则 → 直开 ui_url
  */
 function webUrlFor(s) {
   if (!s.ui_url) return null;
   if (pxInfo.enabled && s.proxy && pxInfo.domain) {
+    let path = '/';
+    try { const u = new URL(s.ui_url); path = u.pathname + u.search; } catch (_) {}
+    const sub = (s.subdomain || s.name).toLowerCase();
+    const b = pxExternalBase();
+    if (b.inDomain) return b.scheme + '://' + sub + '.' + pxInfo.domain + b.portSuffix + path;
     const ep = pxListenPort(true) || pxListenPort(false);
     if (ep) {
-      let path = '/';
-      try { const u = new URL(s.ui_url); path = u.pathname + u.search; } catch (_) {}
-      const sub = (s.subdomain || s.name).toLowerCase();
       return ep.scheme + '://' + sub + '.' + pxInfo.domain + (ep.port === 80 || ep.port === 443 ? '' : ':' + ep.port) + path;
     }
   }
@@ -612,6 +641,7 @@ async function loadServices() {
     el('svcCount').textContent = currentList.length;
     renderGroupbar();
     renderServices(applyGroupFilter(currentList));
+    renderQuickNav();
   } catch (e) {
     const hint = e.message && e.message.includes('401')
       ? '需要鉴权:请在上方填写 token 并保存'
@@ -1237,12 +1267,47 @@ function toggleProxyView() {
 }
 window.addEventListener('hashchange', () => setView(location.hash === '#/proxy'));
 
-// 反代监听入口 → 某 host 的完整访问 URL(路由表/auto 表链接共用)
+// 某 host 的完整访问 URL(路由表/auto 表/顶栏直达共用):
+// 浏览器当前地址在域名体系内 → scheme/port 跟当前页(前置代理 TLS 场景由此正确);
+// 否则回退按 warden 自身 bind 拼(直连入口场景)。
 function pxUrlFor(host) {
+  const b = pxExternalBase();
+  if (b.inDomain) return b.scheme + '://' + host + b.portSuffix + '/';
   const ep = pxListenPort(true) || pxListenPort(false);
   if (!ep) return null;
   const bare = ep.port === 80 || ep.port === 443;
   return ep.scheme + '://' + host + (bare ? '' : ':' + ep.port) + '/';
+}
+
+// 顶栏站点直达:显式路由子域 + auto 暴露服务子域,排除当前页自身;
+// 引擎未启用或浏览器地址不在域名体系内时整组隐藏。
+function renderQuickNav() {
+  const nav = el('quicknav');
+  if (!nav) return;
+  const b = pxExternalBase();
+  const hosts = new Set();
+  for (const r of (pxInfo.routes || [])) hosts.add(r.host);
+  if (pxInfo.enabled && pxInfo.domain) {
+    for (const s of currentList) {
+      if (s.proxy) hosts.add((s.subdomain || s.name).toLowerCase() + '.' + pxInfo.domain);
+    }
+  }
+  hosts.delete(b.hostname);
+  if (!b.inDomain || !hosts.size) { nav.style.display = 'none'; return; }
+  nav.style.display = 'flex';
+  nav.innerHTML = '';
+  const label = document.createElement('span');
+  label.className = 'qn-label';
+  label.textContent = '直达';
+  nav.appendChild(label);
+  for (const h of [...hosts].sort()) {
+    const a = document.createElement('a');
+    a.href = pxUrlFor(h);
+    a.textContent = h.split('.')[0];
+    a.target = '_blank';
+    a.rel = 'noopener';
+    nav.appendChild(a);
+  }
 }
 
 async function loadProxy() {
@@ -1250,6 +1315,7 @@ async function loadProxy() {
   try {
     px = await api('/api/v1/proxy');
     pxInfo = px;
+    renderQuickNav();
     services = (await api('/api/v1/services')).services || [];
   } catch (e) {
     el('pxGlobal').textContent = '加载失败:' + e.message + '(404 = daemon 未编译 reverse-proxy feature)';
