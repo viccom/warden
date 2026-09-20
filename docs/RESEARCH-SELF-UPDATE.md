@@ -1,6 +1,7 @@
 # warden 自升级技术调研
 
 > **状态**:调研完成,取舍待讨论(见 §5 待决问题)。定稿后在本文件登记结论,并更新 ROADMAP。
+> **进展(2026-09-20 补记)**:子进程自升级场景已通过 `restart.mode = "unexpected"` + `expected_exit_codes` 落地(2026-08-24,含 rs-selfupdater/go-selfupdater e2e);**daemon 本体自升级**仍待讨论。
 > **日期**:2026-08-15
 > **关联**:[PLAN-GROUP-PRIORITY-PORTS.md](./PLAN-GROUP-PRIORITY-PORTS.md) —— 升级编排的"有序 drain"依赖分组/优先级方案。
 

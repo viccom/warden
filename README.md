@@ -93,6 +93,7 @@ cd desktop && pnpm install && pnpm tauri build --no-bundle
 
 - [`docs/DESIGN.md`](./docs/DESIGN.md) —— 架构、数据模型、API 与关键决策(权威参考)
 - [`docs/ROADMAP.md`](./docs/ROADMAP.md) —— 分 Phase 进度与变更日志
+- [`docs/PLAN-REVERSE-PROXY.md`](./docs/PLAN-REVERSE-PROXY.md) —— 反向代理实施方案(决策 D1-D13,已实施)
 - [`docs/PLAN-DESKTOP.md`](./docs/PLAN-DESKTOP.md) —— 桌面版实施方案
 - [`docs/PLAN-GROUP-PRIORITY-PORTS.md`](./docs/PLAN-GROUP-PRIORITY-PORTS.md) —— 分组/优先级/端口发现实施方案(已实施)
 - [`docs/PLAN-CERT-ORCHESTRATOR.md`](./docs/PLAN-CERT-ORCHESTRATOR.md) —— 证书编排器(warden 编排 lego,UI 一键申请/续期)实施方案(立项待实施)

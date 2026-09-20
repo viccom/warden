@@ -1,11 +1,11 @@
 # warden 设计文档
 
 > 本文档记录 warden 的架构、数据模型、API 与关键决策,是开发的权威参考。
-> 进度与分 Phase 路线图见 [`ROADMAP.md`](./ROADMAP.md)。后续会话先读 ROADMAP 进度,再回本文档查设计。
+> 进度与分 Phase 路线图见 [`ROADMAP.md`](./ROADMAP.md);反向代理(Phase 6)的设计决策 D1-D13 见 [`PLAN-REVERSE-PROXY.md`](./PLAN-REVERSE-PROXY.md)。后续会话先读 ROADMAP 进度,再回本文档查设计。
 
 ## 1. 项目定位
 
-`warden` 是一个 **Rust 进程监护管理工具**(supervisord / pm2 风格的 supervisor daemon),用于在边缘端统一拉起、监护、监测一组本地进程。
+`warden` 是一个 **Rust 进程监护管理工具**(supervisord / pm2 风格的 supervisor daemon),用于在边缘端统一拉起、监护、监测一组本地进程;并内置**基于域名的 L7 反向代理**(Phase 6,`reverse-proxy` feature 默认开启)把被监护的 Web 服务按子域对外暴露——典型部署为 nginx/OpenResty/caddy 等前置代理终止 TLS,warden 以纯 http 入口做二级分流(见 §2.1)。
 
 - **形态**:一个 daemon 进程,内含监护引擎 + HTTP API server。所有能力通过本地 HTTP API 暴露,**API 契约先行**;TUI(Phase 3)与 Web 前端(Phase 4)都连同一 API。
 - **管理模型**:自带监护 —— daemon 自己 `spawn` 子进程、接管 stdout/stderr、监听退出、按策略决定是否重启。不依赖被管理程序是"服务型程序"(区别于 serviceMgr-tui 的 OS 原生服务注册模式)。
@@ -45,6 +45,36 @@
 
 **数据流**:`config.toml` → `Vec<ServiceConfig>` → Supervisor 为每个服务建 `ProcHandle`(LogHub + `Mutex<ProcInner>` 运行态)→ 用户/外部经 HTTP 触发 start/stop/restart → Supervisor 操作子进程、状态机流转 → API 查询返回实时状态/日志/指标。
 
+### 2.1 反向代理(`src/proxy/`,Phase 6)
+
+反代引擎与监护引擎并列,共享 Supervisor 快照(查 `proxy=true` 服务):
+
+```
+前置代理(nginx/OpenResty/caddy,终止 TLS)          warden 直接暴露(可选)
+        │ http(透传 Host)                                │
+        ▼                                                ▼
+┌─ [proxy] 入口 ─────────────────────────────────────────────────┐
+│ http_bind ───────┐  配 https_bind 时:http 入口全量 301 → https   │
+│ https_bind(rustls│ TLS 终止:单张通配证书(D10),mtime 30s 热重载  │
+│ TLS 终止)────────┘  证书到期 1h 检测告警 + 可选 renew_command     │
+│                                                                  │
+│ HostRouter 按 Host 匹配(确定性顺序):                              │
+│   精确 host > 通配单层(*.<domain> 最长后缀) > auto(proxy=true 服务) │
+│   未命中 → 421;服务停止 → 503;缺 ui_url → 502                     │
+│                                                                  │
+│ forward:hyper-util legacy client 流式直传(body 零重组)            │
+│   WS 隧道(copy_bidirectional)· X-Forwarded-* 追加(XFP 链式透传)   │
+│   错误页 HTML 转义防 XSS · 按路由聚合 metrics · access log 按日轮转 │
+└──────────────────────────────────────────────────────────────────┘
+        │ to: http(s)://upstream(https 上游经 hyper-rustls,可配私有 CA)
+        ▼
+   被监护的 Web 服务(argus / safe-bot / …)
+```
+
+- **热生效**:`SharedProxyConfig = Arc<RwLock<Arc<ProxyConfig>>>`——路由 CRUD API / config reload 写 shared 即时生效(免重启);监听口/证书变更仍需重启。metrics 键 = 命中的路由模式(通配按配置 host 聚合,键基数有界)。
+- **证书外部托管(D13)**:warden 不内置 ACME——签发/续期由 acme.sh/lego 等外部程序承担,warden 职责 = 消费 `cert_file/key_file`(mtime 热重载)+ 到期检测告警 + 可选 `renew_command` 触发(unix sh -c / windows cmd /C,600s 超时强杀,24h 成功冷却)。协同流程见 [`TESTING-ACME.md`](./TESTING-ACME.md)。
+- **feature 门控**:`reverse-proxy` 默认开启;`--no-default-features`(desktop 形态)整体不编译。
+
 ## 3. 技术栈
 
 与 rs-iot 同版本栈,便于统一维护与代码风格延续。
@@ -70,8 +100,13 @@
 | TUI | ratatui / crossterm | 0.30 / 0.28 |
 | API 客户端 | reqwest / reqwest-eventsource | 0.12 / 0.6 |
 | 取消信号 | tokio-util | 0.7(rt,CancellationToken) |
+| 反代 HTTP 客户端 | hyper / hyper-util / http-body-util | 1 / 0.1 / 0.1(legacy client 流式直传) |
+| 反代 TLS | rustls / tokio-rustls / hyper-rustls | 0.23 / 0.26 / 0.27(均 ring 后端,避开 aws-lc-rs 编译依赖) |
+| 证书解析/锚 | x509-parser / webpki-roots | 0.18 / 0.26(到期检测 / 上游 TLS 根) |
+| 日志去噪 | strip-ansi-escapes | 0.2 |
+| 测试 dev-dep | rcgen / time / tokio-tungstenite / sha2 | 0.14 / 0.3 / 0.29 / 0.10(现场签证书 / WS 客户端 / 完整性校验) |
 
-edition 2021 / rust-version 1.81。Web UI 用 `include_str!` 零依赖嵌入(未引入 rust-embed);桌面版(Tauri 2)为 workspace 成员,见 `desktop/`。
+edition 2021 / rust-version 1.81。Web UI 用 `include_str!` 零依赖嵌入(未引入 rust-embed);桌面版(Tauri 2)为 workspace 成员,以 `default-features = false` 依赖根 crate(无反代形态,决策 D6),见 `desktop/`。
 
 ## 4. 目录结构
 
@@ -99,6 +134,11 @@ warden/                          workspace:根 crate warden + desktop/(桌面版
 │   │   ├── health.rs            TCP 健康检查 + webhook 告警
 │   │   ├── ports.rs             监听端口发现(netstat2 采集 + PID 子树过滤)
 │   │   └── signal.rs            优雅停止信号 + Job Object 进程树 + 隐藏 console
+│   ├── proxy/                   反向代理(reverse-proxy feature 门控)
+│   │   ├── mod.rs               引擎装配(http/https 入口 + SharedProxyConfig 热生效 + 路由级 metrics + drain)
+│   │   ├── router.rs            HostRouter(精确 > 通配单层 > auto;Decision 携带命中 pattern)
+│   │   ├── forward.rs           流式直传/WS 隧道/X-Forwarded-*/301 重定向/错误页(XSS 转义)
+│   │   └── tls.rs               rustls acceptor + 证书 mtime 30s 热重载 + 1h 到期检测 + renew_command
 │   ├── tui/                     ratatui 终端客户端(api/mod/ui)
 │   └── api/
 │       ├── mod.rs               build_router + AppState + token 中间件 + Tauri CORS
@@ -106,10 +146,14 @@ warden/                          workspace:根 crate warden + desktop/(桌面版
 │       ├── routes_service.rs    services CRUD + start/stop/restart + 组级启停
 │       ├── routes_logs.rs       logs 快照 + SSE 流
 │       ├── routes_health.rs     daemon 健康(版本/计数/title)
+│       ├── routes_proxy.rs      反代状态 + 路由 CRUD(写回配置 + 热生效;feature 门控)
 │       └── routes_ui.rs         内置 Web UI 单页
 ├── tests/                       集成测试(api_flow/supervisor_e2e/graceful_stop_e2e/
 │                                group_priority_e2e/ports_e2e/crud_config_e2e/
-│                                shutdown_e2e/shutdown_console_e2e/tui_api_e2e/read_example)
+│                                shutdown_e2e/shutdown_console_e2e/tui_api_e2e/read_example/
+│                                parent_death_e2e/sigterm_e2e/lifecycle/
+│                                proxy_e2e/proxy_admin_e2e/proxy_tls_e2e/
+│                                proxy_accesslog_e2e/proxy_warn_e2e)
 │   └── helpers/                 测试辅助 bin(graceful/gbk/stamp/port_listener target)
 └── desktop/                     Tauri 2 桌面版(src-tauri Rust + src Vue3,见 PLAN-DESKTOP.md)
 ```
@@ -138,6 +182,8 @@ pub struct ServiceConfig {
     #[serde(default)] pub output_encoding: Option<String>, // "gbk"/"cp936"/"utf-8";None=UTF-8
     #[serde(default)] pub group: Option<String>,   // 分组标签(纯展示,不参与排序)
     #[serde(default)] pub priority: u32,           // 启动优先级:小者先启动、越后停止;同值按 name 字典序
+    #[serde(default)] pub proxy: bool,             // 经反代域名暴露(auto 路由;需 ui_url)
+    #[serde(default)] pub subdomain: Option<String>, // auto 子域标签,缺省 = name 小写([a-z0-9]+)
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -161,6 +207,36 @@ pub struct RestartPolicy {
 pub enum HealthCheck {
     Tcp { host: String, port: u16, timeout_ms: u64, interval_secs: u64 },
     // timeout_ms 默认 2000,interval_secs 默认 5
+}
+```
+
+### 5.3 反代配置(`config.rs`,`[proxy]` 段;无条件解析,feature off 时 warn 忽略)
+
+```rust
+pub struct ProxyConfig {
+    pub domain: Option<String>,                  // 根域(D10 单根域模型)
+    pub http_bind: Option<String>,               // http 入口(配了 https 时全量 301 → https)
+    pub https_bind: Option<String>,              // https 入口(TLS 终止)
+    #[serde(default = "...")] pub connect_timeout_ms: u64,  // 默认 5000
+    #[serde(default)] pub preserve_host: bool,   // 透传原始 Host 到上游
+    #[serde(default, rename = "route")] pub routes: Vec<ProxyRoute>,
+    pub cert_file: Option<String>,               // 通配证书(单张,D10)
+    pub key_file: Option<String>,
+    pub upstream_ca_file: Option<String>,        // https 上游私有 CA(缺省 webpki-roots)
+    #[serde(default)] pub acme: AcmeConfig,
+}
+
+pub struct AcmeConfig {
+    #[serde(default = "...")] pub expire_warn_days: u32,  // 默认 21
+    pub renew_command: Option<String>,           // 到期告警时触发(unix sh -c / win cmd /C,
+                                                 //   600s 超时强杀,仅成功计 24h 冷却)
+}
+
+pub struct ProxyRoute {
+    pub host: String,                            // 精确 or *.<domain> 单层通配
+    pub to: Option<String>,                      // 上游 URL(与 service 二选一)
+    pub service: Option<String>,                 // 引用托管服务(取其 ui_url;停止 503/缺 ui_url 502)
+    pub preserve_host: Option<bool>,             // 缺省 = 继承段级
 }
 ```
 
@@ -272,7 +348,7 @@ pub struct LogHub {
 
 | Method | Path | 说明 |
 |---|---|---|
-| GET | `/` | 内置 Web UI 单页(状态/日志/CRUD/配置编辑) |
+| GET | `/` | 内置 Web UI 单页(状态/日志/CRUD/配置编辑/反向代理管理/站点直达) |
 | GET | `/api/v1/health` | daemon 健康(版本、服务数、running/failed 计数、`[daemon] title`) |
 | GET | `/api/v1/services` | 列出全部(配置 + 状态 + metrics 摘要) |
 | POST | `/api/v1/services` | 新增服务(校验后写回配置文件,重名/运行中 409) |
@@ -292,8 +368,12 @@ pub struct LogHub {
 | POST | `/api/v1/groups/{group}/start` | 组内全部启动(按 priority) |
 | POST | `/api/v1/groups/{group}/stop` | 组内全部停止(逆序) |
 | POST | `/api/v1/config/reload` | 重新加载配置文件(diff 应用,消失的服务优雅移除) |
+| GET | `/api/v1/proxy` | 反代状态(enabled/domain/binds/routes/metrics;feature 门控) |
+| POST | `/api/v1/proxy/routes` | 新增路由(写回配置 + shared 热生效;重复/非法 409/400) |
+| PUT | `/api/v1/proxy/routes/{host}` | 修改路由(host 是键,不可改) |
+| DELETE | `/api/v1/proxy/routes/{host}` | 删除路由(热移除) |
 
-- **鉴权(Phase 1)**:静态 token。`config.daemon.auth_token` 非空时校验 `Authorization: Bearer <token>`;`/api/v1/health` 放白名单(便于探活)。监听 `127.0.0.1`。Phase 4 加 Web 时再升级为 JWT + login。
+- **鉴权(Phase 1)**:静态 token。`config.daemon.auth_token` 非空时校验 `Authorization: Bearer <token>`;`/api/v1/health` 放白名单(便于探活)。监听 `127.0.0.1`。JWT + login 列为后续增强(尚未实施)。
 - **graceful shutdown**:`tokio_util::sync::CancellationToken` 监听 ctrl_c → `cancel()` → 停所有子进程 + 关 API(对齐 rs-iot `lib.rs` 模式)。
 - **SSE**:`axum::response::Sse` + `tokio_stream::wrappers::BroadcastStream`,把 LogHub 的 broadcast 转成 SSE 事件流(对齐 rs-iot `/api/v1/events`)。
 
@@ -321,6 +401,19 @@ auto_restart = false
 # 子进程自升级场景(旧进程 fork 后 exit 0 不当作崩溃)——dotted-key 多行写法:
 # restart.mode = "unexpected"
 # restart.expected_exit_codes = [0]
+
+# 反向代理(整段缺省 = 不启用;完整字段见 config/services.example.toml 与 §5.3):
+# [proxy]
+# domain    = "example.com"
+# http_bind = "127.0.0.1:8080"
+# # https_bind = "0.0.0.0:8443"                    # TLS 终止(单张通配证书,mtime 30s 热重载)
+# # cert_file / key_file / upstream_ca_file = "..."
+# [proxy.acme]                                     # 证书到期检测 + 可选外部续期(D13)
+# expire_warn_days = 21
+# renew_command = "acme.sh --renew -d example.com"
+# [[proxy.route]]
+# host = "app.example.com"                         # 精确 host 或 *.example.com 单层通配
+# to   = "http://127.0.0.1:9000"                   # 或 service = "..."(引用托管服务)
 ```
 
 - **路径查找优先级**(CLI;桌面版另有独立链,见 `desktop/src-tauri/src/daemon.rs`):
@@ -334,7 +427,7 @@ auto_restart = false
 
 ## 10. 错误处理(对齐 rs-iot,分层)
 
-- **库层**:`thiserror` enum `WardenError`,`#[from]` 收纳 `io::Error` / `toml::de::Error` / `serde_json::Error` 等,加语义变体(`Config(String)` / `ServiceNotFound` / `InvalidState`)。
+- **库层**:`thiserror` enum `WardenError`,`#[from]` 收纳 `io::Error` / `toml::de::Error` / `serde_json::Error` 等,加语义变体(`Config(String)` / `ServiceNotFound` / `InvalidState` / `Conflict`→409 / `NotFound`→404 / `Unauthorized`→401)。
 - **binary 层**:`anyhow::Result`(main)。
 - **HTTP 边界**:`impl IntoResponse for WardenError` → 返 `{ "error": "<variant>", "message": "<msg>" }` + 合适状态码(NOT_FOUND / CONFLICT / INTERNAL_SERVER_ERROR)。**改进点**:rs-iot 没做 handler 级 `Result + IntoResponse`,warden 补上,handler 可写 `Result<Json<T>, WardenError>`。
 
@@ -356,14 +449,15 @@ auto_restart = false
 |---|---|---|
 | 架构模式 | 自带监护(supervisor)而非 OS 原生服务注册 | rs-iot 三件套(exe / node cmd shim)都不是服务型程序,自带监护可管任意可执行文件;OS 注册能力仅用于注册 daemon 自身(P2) |
 | 崩溃重启 | 内置但默认关闭 | 默认不干扰现场调试;每服务可显式开 auto_restart + 配退避 |
-| stop 方式 | 强制 kill(P1) | Windows 无对任意进程的优雅信号;TerminateProcess 够用;优雅停止列 P4 |
+| stop 方式 | 优雅信号 + 超时强杀进程树(2026-08-14 起实现) | Linux SIGTERM / Windows `CTRL_BREAK_EVENT`(独立进程组投递)→ `graceful_timeout_secs` → `TerminateJobObject`;每子进程一个 Job Object,无孤儿 |
 | 鉴权 | 静态 token(P1) | 无前端本地工具,JWT 太重;P4 加 Web 再升级 |
 | 运行态持久化 | 不持久化;**配置文件是唯一数据源**(2026-08-17 重构) | CRUD 经 `config_edit`(toml_edit 保注释)直接写回配置文件;daemon 重启只按 auto_start 拉起(supervisord 语义)。曾有的 runtime overlay + desired_state 已废除,启动时一次性迁移(旧文件改 .bak)——单数据源,删文件即清空,无"幽灵服务" |
 | handler 错误 | `Result + IntoResponse` | 比 rs-iot 手写 `Json<Value>` 规整,新项目做改进(规则 6 暴露而非折中) |
 | 单 crate(lib+bin)→ workspace | Phase 5 桌面版加入 `desktop/src-tauri` 成员 | 根命令行为不变;TUI 留在根 crate,桌面版 path 依赖复用 lib |
 | TUI/Web 接入 | 连 HTTP API | API 契约先行,前端形态可换;TUI 用 reqwest 连本地/远程 API |
+| 反代 ACME | 不内置,外部程序托管(D13) | 泛域名必须 DNS-01,凭据管理交 acme.sh/lego;warden 只做消费/检测/续期钩子,详见 PLAN-REVERSE-PROXY.md |
 
 ## 13. 参考项目
 
-- **serviceMgr-tui**(`D:\Go_Codes\serviceMgr-tui`,Go):OS 原生服务注册 + TUI。借鉴:配置路径查找优先级、坏项跳过容错、服务名字符校验、退出码翻译、UAC 提权思路(P2)、暗色 TUI 交互范式(P3)。
-- **rs-iot**(`E:\github.com\rs-iot`,Rust):技术栈与代码风格来源。借鉴:workspace/profile、clap + toml::from_str + serde Default、tracing 多 layer + appender guard、axum build_router + 中间件、rust-embed SPA fallback(P4 Web)、CancellationToken graceful shutdown、tower oneshot 集成测试范式、thiserror+anyhow 分层。
+- **serviceMgr-tui**(Go):OS 原生服务注册 + TUI。借鉴:配置路径查找优先级、坏项跳过容错、服务名字符校验、退出码翻译、UAC 提权思路(P2)、暗色 TUI 交互范式(P3)。
+- **rs-iot**(Rust):技术栈与代码风格来源。借鉴:workspace/profile、clap + toml::from_str + serde Default、tracing 多 layer + appender guard、axum build_router + 中间件、include_str! 单页嵌入(warden 未引入 rust-embed)、CancellationToken graceful shutdown、tower oneshot 集成测试范式、thiserror+anyhow 分层。

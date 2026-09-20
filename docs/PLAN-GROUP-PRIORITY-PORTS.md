@@ -229,3 +229,10 @@ spawn_blocking(netstat2 全表) 一次(共享结果)→ filter_listening → 写
 7. **netstat2 依赖面**:Windows 零额外传递依赖(自写 FFI);Linux/macOS 构建才拉 netlink/bindgen 系(warden Linux 交叉构建需 libclang,与上文 Linux 风险项同批)。
 
 新文件:`src/supervisor/ports.rs`、`tests/helpers/stamp_target.rs`、`tests/helpers/port_listener_target.rs`、`tests/group_priority_e2e.rs`、`tests/ports_e2e.rs`。
+
+---
+
+## 后记(2026-09-20 核对)
+
+- 本文实施期间引用的 runtime overlay(`persist_runtime` 序列化 / "重启后 overlay 恢复不丢")已于 **2026-08-17 废除**(见 DESIGN §12:**配置文件是唯一数据源**,CRUD 经 `config_edit` 写回)。上述表述为实施当时的历史记录,现状以 DESIGN 为准。
+- 引用的 `tests/crud_desired_health_e2e.rs` 现名 **`tests/crud_config_e2e.rs`**(配置写回重构时更名)。

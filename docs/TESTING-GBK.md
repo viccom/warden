@@ -9,25 +9,25 @@
 | `tests/helpers/gbk_target.rs` | 测试程序:向 stdout 输出 **GBK 编码**中文行(绕过 `println!` 的 UTF-8,模拟中文 Windows 控制台程序),每 0.5s 一行,无限循环 |
 | `config/services.test.toml` | 测试配置:两个服务跑**同一个** `gbk_target`,唯一差异是是否设 `output_encoding`,用于对比。端口 `8791`(避开日常 `8789`) |
 
-> ⚠️ **必须用 Git Bash 测试,不要用 cmd/PowerShell**。warden 返回 UTF-8 JSON,只有 Git Bash 终端能正确显示中文;cmd 是 GBK 终端会二次乱码。
+> ⚠️ **必须用 Git Bash 测试,不要用 cmd/PowerShell**。warden 返回 UTF-8 JSON,只有 Git Bash 终端能正确显示中文;cmd 是 GBK 终端会二次乱码。本指南撰写于 Windows 现场;其他平台步骤等价,路径按实际检出位置。
 
 ## 步骤
 
 ### 1. 编译(生成 warden + gbk_target)
 ```bash
-cd E:/github.com/warden
+cd <仓库检出目录>   # warden 仓库根
 cargo build
 ```
 验证:无报错,`target/debug/gbk_target.exe` 存在。
 
 ### 2. 前台启动 warden(开**第一个终端**,保持运行)
 ```bash
-cd E:/github.com/warden
+cd <仓库检出目录>   # warden 仓库根
 cargo run -- run --config config/services.test.toml
 ```
 预期:
 ```
-[warden] 0.1.0 启动,配置 2 个服务,api_bind=127.0.0.1:8791
+[warden] 0.3.0 启动,配置 2 个服务,api_bind=127.0.0.1:8791
 [warden] HTTP API listening on 127.0.0.1:8791
 ```
 

@@ -1,6 +1,7 @@
 # 实施方案:warden 桌面版(Tauri 2)
 
 > **状态**:P1 已完成(2026-08-15,实施记录见文末);P2(metrics 图表/系统通知/自动发现)未开始。
+> P1 之后的增量(随主 crate 0.3.0):配置文件在线编辑器(`ConfigEditor.vue`)、自定义标题栏(`TitleBar.vue`)、浅色/深色主题切换;内嵌 daemon 为**无反代形态**(D6,见 §2)。
 > **日期**:2026-08-15
 > **需求来源**:用户三条——①覆盖 CLI 版功能但只前台运行、全局单实例、最小化托盘/托盘退出;②默认管理自己子进程 + 可添加其他 warden 节点(本机 CLI / 远程)统一管理;③前端 UI 重写(不复用 CLI web),支持 group 过滤、group 级启停,设计自由度大。
 
@@ -27,9 +28,9 @@ warden/                     # 现有 crate 不动,root Cargo.toml 追加 [worksp
 ```
 
 **核心原则:本地节点与远程节点统一走 HTTP API。**
-- 桌面版启动时进程内起 warden daemon(Supervisor + axum router),绑 `127.0.0.1:0` 随机端口 + 进程内生成的随机 token(防本机其他进程裸连),实际端口经 Tauri 初始化事件传给前端
+- 桌面版启动时进程内起 warden daemon(Supervisor + axum router),绑 `127.0.0.1:0` 随机端口 + 进程内生成的随机 token(防本机其他进程裸连),实际端口经 Tauri 初始化事件传给前端。**desktop 以 `default-features = false` 依赖根 crate(决策 D6):不编译反代引擎,内嵌 daemon 无 `/api/v1/proxy` 系端点**
 - 本地节点自动注入节点列表(不可删);远程节点 = 用户添加(url + token + 显示名),持久化在应用数据目录 `nodes.json`
-- 前端一套 HTTP/SSE 客户端代码覆盖所有节点;CLI 版 API 全量复用(服务/日志/CRUD/健康/端口/组启停)
+- 前端一套 HTTP/SSE 客户端代码覆盖所有节点;复用 CLI 版 API 的服务/日志/CRUD/健康/端口/组启停(反代端点为 default 形态独有)
 - 随机端口避免与用户手动跑的 CLI warden(8789)冲突
 
 **桌面行为**:
@@ -57,6 +58,8 @@ group 过滤列表前端本地做(`/services` 已含 group 字段),不加服务�
 - **日志面板**:选中服务 SSE 实时流(每节点一个 EventSource;token 走轮询降级,与 CLI web 同策略)+ 关键词/等级过滤 + 暂停/清空/自动滚动
 - **服务 CRUD 表单**:对齐 CLI web 字段 + group/priority;仅对支持 CRUD 的节点可用(全部 warden 均支持)
 - **暗色主题**(对齐 CLI web 风格基调,重新设计)
+
+P1 后增量交付(0.3.0 前):**配置文件在线编辑器**(`ConfigEditor.vue`,着色/校验保存/格式化,对齐 CLI web)、**自定义标题栏**(`TitleBar.vue`)、**浅色/深色主题切换**(`NodeSidebar.vue` theme-toggle)。
 
 P2(后续,不在本次):metrics 历史图表、系统通知(健康迁移)、自动发现局域网 warden、前端多语言。
 

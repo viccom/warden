@@ -1,18 +1,18 @@
 # warden 桌面版(Tauri 2 + Vue 3)
 
-多节点进程监护管理桌面客户端。方案与设计见仓库 [`docs/PLAN-DESKTOP.md`](../docs/PLAN-DESKTOP.md)。
+多节点进程监护管理桌面客户端(v0.3.0)。方案与设计见仓库 [`docs/PLAN-DESKTOP.md`](../docs/PLAN-DESKTOP.md)。
 
 ## 架构
 
-- **Rust 侧**(`src-tauri/`,`path` 依赖复用根 crate `warden`):
+- **Rust 侧**(`src-tauri/`,`path` 依赖复用根 crate `warden`,`default-features = false`——**无反向代理形态**(决策 D6),内嵌 daemon 无 `/api/v1/proxy` 端点):
   - 进程内起**内嵌 daemon**(监护引擎 + HTTP API),绑 `127.0.0.1` 随机端口 + 随机 token
   - 远程节点注册表持久化(`nodes.json`,应用数据目录)
   - 全局单实例(`tauri-plugin-single-instance`)、托盘(关闭=最小化,托盘退出时优雅停止全部子进程)
 - **前端**(`src/`,Vue 3 + Vite):本地内嵌节点与远程节点**统一走 HTTP API**,一套客户端代码
-  - 节点侧栏(添加/删除 warden 节点)、服务卡片(状态/健康/组/优先级/CPU/内存/监听端口)
+  - 节点侧栏(添加/删除 warden 节点,浅色/深色主题切换)、服务卡片(状态/健康/组/优先级/CPU/内存/监听端口)
   - 「全部节点」为观察视图:过滤与单服务启停可用,批量动作(新增服务/全部启停/组级启停)禁用——须先选中具体节点
   - 分组过滤 chips + **组级全部启动/停止**(daemon 侧按优先序/逆序执行)
-  - 日志面板(SSE 实时流,token 节点自动降级轮询)、服务 CRUD 表单
+  - 日志面板(SSE 实时流,token 节点自动降级轮询)、服务 CRUD 表单、配置文件在线编辑器(着色/校验保存/格式化)、自定义标题栏
 
 ## 开发
 

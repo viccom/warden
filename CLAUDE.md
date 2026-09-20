@@ -30,7 +30,7 @@ warden 是一个 **Rust 进程监护管理工具**(supervisord / pm2 风格的 s
 
 **技术栈**(对齐 rs-iot 版本栈,便于统一维护):tokio 1 / axum 0.8 / serde+toml(+`toml_edit` 保注释写回)/ thiserror+anyhow / clap / tracing(+appender)/ dashmap / sysinfo / `encoding_rs`(GBK 解码)/ `windows-service`(OS 注册)/ `ratatui`+`reqwest`(TUI)/ `netstat2`(端口发现);反代(feature 门控):`hyper`+`hyper-util`+`http-body-util`(流式直传)/ `rustls`+`tokio-rustls`+`hyper-rustls`(均 ring 后端,避开 aws-lc-rs 编译依赖)/ `x509-parser`+`webpki-roots`(证书到期解析/上游 TLS 锚),测试用 `rcgen`+`time` 现签证书。edition 2021, rust-version 1.81。Web UI 用 `include_str!` 零依赖嵌入(未引入 rust-embed);桌面版(Tauri 2)见 `desktop/`。
 
-**参考项目**:`D:\Go_Codes\serviceMgr-tui`(Go,OS 服务注册 + TUI 的蓝本)、`E:\github.com\rs-iot`(技术栈与代码风格来源)。
+**参考项目**:serviceMgr-tui(Go,OS 服务注册 + TUI 的蓝本)、rs-iot(Rust,技术栈与代码风格来源)。
 
 **跨会话接续**:`docs/ROADMAP.md`(进度 checklist + 下一步 + 已知局限 + 变更日志)是入口,新会话**先读它**;`docs/DESIGN.md` 是设计权威(架构/数据模型/API/状态机/决策)。
 
