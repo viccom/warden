@@ -27,7 +27,7 @@ Rust 进程监护管理工具(supervisord / pm2 风格的 supervisor daemon):统
 - **端口发现**:自动枚举被监护进程(含孙进程)的 TCP/UDP 监听端口
 - **GBK 输出解码**:中文 Windows 控制台程序输出按 `output_encoding = "gbk"` 正确解码
 - **运行时 CRUD**:HTTP API 增删改服务,直接写回 TOML 配置文件(唯一数据源,保留注释),重启后原样恢复
-- **反向代理**(`reverse-proxy` feature,默认开启;desktop 形态不含):基于域名(通配单层)的 L7 反代,把被监护的 Web 服务按子域对外暴露——TLS 终止(单张通配证书,mtime 轮询热重载)+ http→https 301 + WebSocket/SSE/大文件流式直传 + 显式路由与「auto 服务暴露」(`proxy=true` 的服务按 `subdomain` 自动获得 `*.domain` 子域) + 运行时路由 CRUD(热生效,免重启) + 按路由聚合的 metrics + 访问日志按日轮转 + Web 反代管理页(顶栏站点直达导航);证书到期检测告警 + 可选外部续期命令(与 1Panel/acme.sh/lego 协同,流程见 `docs/TESTING-ACME.md`;证书编排器已立项见 `docs/PLAN-CERT-ORCHESTRATOR.md`)
+- **反向代理**(`reverse-proxy` feature,默认开启;desktop 形态不含):基于域名(通配单层)的 L7 反代,把被监护的 Web 服务按子域对外暴露——TLS 终止(单张通配证书,mtime 轮询热重载)+ http→https 301 + WebSocket/SSE/大文件流式直传 + 显式路由与「auto 服务暴露」(`proxy=true` 的服务按 `subdomain` 自动获得 `*.domain` 子域) + 运行时路由 CRUD(热生效,免重启) + 按路由聚合的 metrics + 访问日志按日轮转 + Web 反代管理页(顶栏站点直达导航);证书到期检测告警 + 可选外部续期命令(与 acme.sh/lego 等任意 ACME 客户端协同;典型部署为 nginx/OpenResty/caddy 等主流 web 服务器前置终止 TLS、warden 二级按子域分流,流程见 `docs/TESTING-ACME.md`;证书编排器已立项见 `docs/PLAN-CERT-ORCHESTRATOR.md`)
 - **鉴权**:`auth_token` Bearer 认证;桌面版内嵌 daemon 用随机端口 + 随机 token
 - **桌面版**(Tauri 2 + Vue 3):多节点管理(本机内嵌 + 远程 warden)、自定义标题栏、系统托盘、配置文件在线编辑器、浅色/深色主题
 
