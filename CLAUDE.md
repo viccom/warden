@@ -4,7 +4,7 @@ This file provides guidance to Claude Code / ZCode when working with code in thi
 
 ## 项目地图
 
-warden 是一个 **Rust 进程监护管理工具**(supervisord / pm2 风格的 supervisor daemon),在边缘端统一拉起、监护、监测一组本地进程。独立通用工具,典型用例是监护 rs-iot 三件套(rs-iot / reasonix serve / rsiot-gateway)。
+warden 是一个 **Rust 进程监护管理工具**(supervisord / pm2 风格的 supervisor daemon),在边缘端统一拉起、监护、监测一组本地进程,并内置**基于域名的 L7 反向代理**(`reverse-proxy` feature,默认开;desktop 退 default-features=false 不含)把被监护的 Web 服务按子域对外暴露(生产形态常为 前置代理终止 TLS → warden 纯 http 二级分流)。独立通用工具,典型用例是监护 rs-iot 三件套(rs-iot / reasonix serve / rsiot-gateway)。
 
 **架构(自带监护 + daemon 自注册混合,见 `docs/DESIGN.md`)**:
 - daemon 自己 `spawn` 子进程、接管 stdout/stderr、监听退出、按策略重启(**监护**)
@@ -24,10 +24,11 @@ warden 是一个 **Rust 进程监护管理工具**(supervisord / pm2 风格的 s
 | `logs.rs` | `LogHub`(VecDeque 环缓冲 2000 + broadcast 256 + 按日轮转文件) |
 | `supervisor/` | 监护引擎:`mod`(Supervisor + ProcHandle + ServiceStatus + 有序启停)+ `proc`(状态机/backoff/spawn/wait)+ `metrics`(sysinfo 采样)+ `ports`(监听端口发现:netstat2 采集 + PID 子树过滤)+ `health`(TCP 探测 + webhook 告警)+ `signal`(优雅停止信号 + Job Object 进程树 + 隐藏 console) |
 | `service/` | OS 自注册:Windows(`sc.exe` + `define_windows_service` + SCM 控制 + UAC 提权)/ systemd(框架已写,未实测) |
+| `proxy/` | 反向代理(feature 门控):`mod`(引擎装配/SharedProxyConfig 热生效/路由级 metrics/启动与 drain)+ `router`(HostRouter:精确 > 通配单层 > auto=查 proxy=true 服务)+ `forward`(hyper-util 流式直传/WS 隧道/X-Forwarded-*/301/错误页 XSS 转义)+ `tls`(rustls TLS 终止 + 证书 mtime 30s 热重载 + 1h 到期检测告警 + 可选 renew_command 外部续期) |
 | `tui/` | ratatui 终端客户端:`api`(reqwest + SSE)/ `ui`(服务表格/详情/日志渲染)/ `mod`(事件循环) |
-| `api/` | axum `build_router` + token 鉴权中间件 + Tauri CORS + `routes_service`/`routes_logs`/`routes_health`/`routes_ui`(内置 Web 单页)+ SSE |
+| `api/` | axum `build_router` + token 鉴权中间件 + Tauri CORS + `routes_service`/`routes_logs`/`routes_health`/`routes_ui`(内置 Web 单页,`include_str!` 嵌入)/`routes_proxy`(代理状态 + 路由 CRUD,feature 门控)+ SSE |
 
-**技术栈**(对齐 rs-iot 版本栈,便于统一维护):tokio 1 / axum 0.8 / serde+toml(+`toml_edit` 保注释写回)/ thiserror+anyhow / clap / tracing(+appender)/ dashmap / sysinfo / `encoding_rs`(GBK 解码)/ `windows-service`(OS 注册)/ `ratatui`+`reqwest`(TUI)/ `netstat2`(端口发现)。edition 2021, rust-version 1.81。Web UI 用 `include_str!` 零依赖嵌入(未引入 rust-embed);桌面版(Tauri 2)见 `desktop/`。
+**技术栈**(对齐 rs-iot 版本栈,便于统一维护):tokio 1 / axum 0.8 / serde+toml(+`toml_edit` 保注释写回)/ thiserror+anyhow / clap / tracing(+appender)/ dashmap / sysinfo / `encoding_rs`(GBK 解码)/ `windows-service`(OS 注册)/ `ratatui`+`reqwest`(TUI)/ `netstat2`(端口发现);反代(feature 门控):`hyper`+`hyper-util`+`http-body-util`(流式直传)/ `rustls`+`tokio-rustls`+`hyper-rustls`(均 ring 后端,避开 aws-lc-rs 编译依赖)/ `x509-parser`+`webpki-roots`(证书到期解析/上游 TLS 锚),测试用 `rcgen`+`time` 现签证书。edition 2021, rust-version 1.81。Web UI 用 `include_str!` 零依赖嵌入(未引入 rust-embed);桌面版(Tauri 2)见 `desktop/`。
 
 **参考项目**:`D:\Go_Codes\serviceMgr-tui`(Go,OS 服务注册 + TUI 的蓝本)、`E:\github.com\rs-iot`(技术栈与代码风格来源)。
 
@@ -58,6 +59,12 @@ curl http://127.0.0.1:8789/api/v1/services
 curl -X POST http://127.0.0.1:8789/api/v1/services/<name>/start
 curl -X POST http://127.0.0.1:8789/api/v1/services/<name>/stop
 curl "http://127.0.0.1:8789/api/v1/services/<name>/logs?tail=100"
+
+# 反向代理(feature 门控;路由 CRUD 写回配置,热生效):
+curl http://127.0.0.1:8789/api/v1/proxy                       # 状态/domain/binds/routes/metrics
+curl -X POST  http://127.0.0.1:8789/api/v1/proxy/routes       # 新增路由 {host,to|service,preserve_host?}
+curl -X PUT    http://127.0.0.1:8789/api/v1/proxy/routes/<host>
+curl -X DELETE http://127.0.0.1:8789/api/v1/proxy/routes/<host>
 ```
 
 ## 编码约定
@@ -72,10 +79,12 @@ curl "http://127.0.0.1:8789/api/v1/services/<name>/logs?tail=100"
 
 ## 验证规则
 
-- 改 `src/` 任意代码:`cargo fmt --all --check` + `cargo clippy --all-targets -- -D warnings` + `cargo test` 三项全绿才算完成(与 CI 门槛一致)。
+- 改 `src/` 任意代码:`cargo fmt --all --check` + `cargo clippy --all-targets -- -D warnings` + `cargo test` 三项全绿才算完成(与 CI 门槛一致)。本机为 16 核共享 KVM,**cargo 命令一律带 `--jobs 6`**。
+- **反向代理双形态**:默认 feature(含反代)+ `--no-default-features`(无反代)两形态各跑一遍三绿(CI 已加 OFF 形态步骤);改 `proxy/` 相关另跑 `tests/proxy_admin_e2e.rs` / `proxy_tls_e2e.rs` / `proxy_accesslog_e2e.rs`。
 - 改监护逻辑(`supervisor/`):跑 `tests/supervisor_e2e.rs`(start/stop、速退 Failed、重启熔断、logs 捕获、metrics 采样)。
 - 改 API(`api/`):跑 `tests/api_flow.rs`(`tower::ServiceExt::oneshot` 打 `build_router`,含鉴权拒绝/放行 + health 白名单)。
 - 改配置语义(`config.rs`):跑 `config::tests`(解析/Default/坏项跳过/覆盖)。
+- 改 Web UI(`web/index.html`):`include_str!` 编译期嵌入,**改后必须重新 `cargo build` 才生效**(运行中的 daemon 不热加载);JS 预检可提取 `<script>` 段过 `node --check`。
 - 新增逻辑补 `#[cfg(test)]` 内联单测或 `tests/` 集成测试。集成测试用 `tests/common`(`long_runner`/`quick_fail` 跨平台无害命令),**勿固定端口、勿写仓库 `./data/`/`./logs/`**。
 - **进程树语义(必读)**:每个子进程一个 Job Object(Windows,`KILL_ON_JOB_CLOSE`)。`stop` = 优雅信号(CTRL_BREAK/SIGTERM)→ `graceful_timeout_secs` 超时 → `TerminateJobObject` 强杀**整棵进程树**(含孙进程);warden 自身崩溃/退出时子进程树全死,无孤儿。测试可放心覆盖孙进程场景(`port_listener_target --grandchild`)。
 
