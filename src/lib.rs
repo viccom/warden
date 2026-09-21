@@ -12,6 +12,7 @@ pub mod api;
 pub mod config;
 pub mod config_edit;
 pub mod error;
+pub mod lock;
 pub mod logs;
 pub mod model;
 #[cfg(feature = "reverse-proxy")]

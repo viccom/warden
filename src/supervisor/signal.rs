@@ -127,6 +127,8 @@ mod windows_imp {
 
     use tokio::process::Child;
     use tokio_util::sync::CancellationToken;
+
+    use crate::lock::lock;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::Console::{
         AllocConsole, GenerateConsoleCtrlEvent, GetConsoleWindow, SetConsoleCtrlHandler,
@@ -196,7 +198,7 @@ mod windows_imp {
     /// 阻止 tokio/std 默认 handler 的 `ExitProcess(0xC000013A)` 强杀);其他事件不处理。
     extern "system" fn on_console_event(ty: u32) -> i32 {
         if ty == CTRL_C_EVENT || ty == CTRL_BREAK_EVENT {
-            if let Some(t) = CONSOLE_SHUTDOWN.lock().unwrap().as_ref() {
+            if let Some(t) = lock(&CONSOLE_SHUTDOWN).as_ref() {
                 tracing::info!("[warden] 收到 console 中断事件({ty}),触发 shutdown");
                 t.cancel();
             }
@@ -208,7 +210,7 @@ mod windows_imp {
 
     /// 注册 daemon 自身的 Ctrl-C handler(幂等:token 以最后一次为准)。
     pub fn install_console_shutdown(cancel: CancellationToken) -> io::Result<()> {
-        *CONSOLE_SHUTDOWN.lock().unwrap() = Some(cancel);
+        *lock(&CONSOLE_SHUTDOWN) = Some(cancel);
         unsafe {
             if SetConsoleCtrlHandler(Some(on_console_event), 1) == 0 {
                 return Err(io::Error::last_os_error());

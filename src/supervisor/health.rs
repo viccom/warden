@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 
+use crate::lock::lock;
 use crate::model::{HealthCheck, HealthStatus};
 
 use super::Supervisor;
@@ -26,7 +27,7 @@ pub fn spawn_health(
                 .handles
                 .iter()
                 .filter_map(|entry| {
-                    let g = entry.inner.lock().unwrap();
+                    let g = lock(&entry.inner);
                     let hc = g.config.health.clone()?;
                     if !g.state.is_running() {
                         return None;
@@ -79,7 +80,7 @@ async fn check_one(entry: &super::ProcHandle, hc: &HealthCheck, webhook: Option<
     };
 
     let (prev, next) = {
-        let mut g = entry.inner.lock().unwrap();
+        let mut g = lock(&entry.inner);
         let prev = g.health.status.clone();
         let failures = if ok {
             0
@@ -100,7 +101,7 @@ async fn check_one(entry: &super::ProcHandle, hc: &HealthCheck, webhook: Option<
     };
 
     if prev != next {
-        let name = &entry.inner.lock().unwrap().config.name;
+        let name = &lock(&entry.inner).config.name;
         let detail = err.as_deref().unwrap_or("");
         let msg = format!(
             "[warden] 健康状态迁移:{name} {prev} → {next}{}",

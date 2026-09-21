@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tower::Service; // Router::call
 
 use crate::config::AcmeConfig;
+use crate::lock::{lock, read, write};
 use crate::proxy::{forward, ProxyState, DRAIN_LIMIT};
 
 /// 证书热重载周期(生产;测试经 `spawn_cert_reload` 参数压缩)。
@@ -57,7 +58,7 @@ impl CertReloader {
 
     /// 当前配置构建 acceptor(TlsAcceptor 构造成本为一次 Arc clone)。
     pub fn acceptor(&self) -> TlsAcceptor {
-        TlsAcceptor::from(self.current.read().expect("cert cfg 锁中毒").clone())
+        TlsAcceptor::from(read(&self.current).clone())
     }
 
     /// mtime 变化则重载;失败保留旧配置并返回错误文案(调用方记日志)。
@@ -65,12 +66,12 @@ impl CertReloader {
     /// 下一轮两文件齐了再成功。
     pub fn reload_if_changed(&self) -> Result<bool, String> {
         let sig = pair_mtime(&self.cert_path, &self.key_path)?;
-        if sig == *self.loaded_sig.lock().expect("cert sig 锁中毒") {
+        if sig == *lock(&self.loaded_sig) {
             return Ok(false);
         }
         let cfg = load_server_config(&self.cert_path, &self.key_path)?;
-        *self.current.write().expect("cert cfg 锁中毒") = Arc::new(cfg);
-        *self.loaded_sig.lock().expect("cert sig 锁中毒") = sig;
+        *write(&self.current) = Arc::new(cfg);
+        *lock(&self.loaded_sig) = sig;
         Ok(true)
     }
 }

@@ -1,7 +1,7 @@
 [package]
 name = "warden"
 default-run = "warden"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 rust-version = "1.81"
 license = "MIT"
@@ -88,9 +88,10 @@ sysinfo = "0.32"
 directories = "5"
 # 子进程输出编码解码(GBK/CP936 等中文编码),Phase 2
 encoding_rs = "0.8"
-# TUI 客户端(Phase 3):ratatui 0.30 + crossterm 0.28 + reqwest(API/SSE)
+# TUI 客户端(Phase 3):ratatui 0.30 + crossterm(与 ratatui 内置 ratatui-crossterm
+# 同 0.29 版本栈,避免双版本共存)+ reqwest(API/SSE)
 ratatui = "0.30"
-crossterm = { version = "0.28", features = ["events"] }
+crossterm = { version = "0.29", features = ["events"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 reqwest-eventsource = "0.6"
 netstat2 = "0.11.2"

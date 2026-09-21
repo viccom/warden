@@ -14,6 +14,8 @@ use chrono::Local;
 use serde::Serialize;
 use tokio::sync::broadcast;
 
+use crate::lock::lock;
+
 /// 日志来源流。
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -67,7 +69,7 @@ impl LogHub {
             text: text.into(),
         };
         {
-            let mut h = self.history.lock().unwrap();
+            let mut h = lock(&self.history);
             if h.len() >= HISTORY_CAPACITY {
                 h.pop_front();
             }
@@ -75,7 +77,7 @@ impl LogHub {
         }
         // 无订阅者时 send 返回 Err,属正常,忽略
         let _ = self.tx.send(line.clone());
-        if let Some(rf) = self.file.lock().unwrap().as_mut() {
+        if let Some(rf) = lock(&self.file).as_mut() {
             if let Err(e) = rf.append_line(&line) {
                 tracing::warn!("[logs] 落盘失败:{e}");
             }
@@ -84,7 +86,7 @@ impl LogHub {
 
     /// 最近 n 行(按时间升序)。
     pub fn snapshot(&self, n: usize) -> Vec<LogLine> {
-        let h = self.history.lock().unwrap();
+        let h = lock(&self.history);
         let start = h.len().saturating_sub(n);
         h.iter().skip(start).cloned().collect()
     }

@@ -16,13 +16,11 @@ use crate::api::AppState;
 use crate::config::{self, ProxyRoute};
 use crate::config_edit::ConfigFile;
 use crate::error::{WResult, WardenError};
+use crate::lock::{lock, read, write};
 
 /// 全局视图:engine 状态 + domain/binds/preserve_host + 路由表 + 路由级 metrics。
 pub async fn get_proxy(State(st): State<AppState>) -> impl IntoResponse {
-    let cfg = st
-        .proxy_shared
-        .as_ref()
-        .map(|s| s.read().expect("proxy 锁中毒").clone());
+    let cfg = st.proxy_shared.as_ref().map(|s| read(s).clone());
     let metrics: Vec<_> = st
         .proxy_metrics
         .snapshot()
@@ -48,7 +46,7 @@ pub async fn create_route(
     State(st): State<AppState>,
     Json(route): Json<ProxyRoute>,
 ) -> WResult<impl IntoResponse> {
-    let _edit = st.config_edit_lock.lock().unwrap();
+    let _edit = lock(&st.config_edit_lock);
     let mut route = route;
     route.host = route.host.to_lowercase();
     validate_new(&st, &route)?;
@@ -78,7 +76,7 @@ pub async fn update_route(
             route.host
         )));
     }
-    let _edit = st.config_edit_lock.lock().unwrap();
+    let _edit = lock(&st.config_edit_lock);
     let mut route = route;
     route.host = host.to_lowercase();
     let cur = file_proxy(&st)?;
@@ -107,7 +105,7 @@ pub async fn delete_route(
     State(st): State<AppState>,
     Path(host): Path<String>,
 ) -> WResult<impl IntoResponse> {
-    let _edit = st.config_edit_lock.lock().unwrap();
+    let _edit = lock(&st.config_edit_lock);
     let mut file = ConfigFile::load_or_create(&st.effective_config_path())?;
     let host = host.to_lowercase();
     if !file.remove_proxy_route(&host)? {
@@ -169,7 +167,7 @@ fn sync_engine(st: &AppState) -> WResult<&'static str> {
         .map_err(|e| WardenError::Config(format!("重读配置失败:{e}")))?;
     match (&st.proxy_shared, cfg.proxy) {
         (Some(shared), Some(p)) => {
-            *shared.write().expect("proxy 锁中毒") = Arc::new(p);
+            *write(shared) = Arc::new(p);
             Ok("live")
         }
         (None, _) => Ok("restart_required"),

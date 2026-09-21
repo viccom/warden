@@ -15,6 +15,9 @@ use crate::api::AppState;
 use crate::config;
 use crate::config_edit::ConfigFile;
 use crate::error::{WResult, WardenError};
+use crate::lock::lock;
+#[cfg(feature = "reverse-proxy")]
+use crate::lock::write;
 use crate::model::ServiceConfig;
 
 pub async fn list(State(st): State<AppState>) -> impl IntoResponse {
@@ -35,7 +38,7 @@ pub async fn get_config(
     Path(name): Path<String>,
 ) -> WResult<impl IntoResponse> {
     let h = st.supervisor.handle(&name)?;
-    let cfg = h.inner.lock().unwrap().config.clone();
+    let cfg = lock(&h.inner).config.clone();
     Ok(Json(cfg))
 }
 
@@ -103,7 +106,7 @@ pub async fn create(
     State(st): State<AppState>,
     Json(svc): Json<ServiceConfig>,
 ) -> WResult<impl IntoResponse> {
-    let _edit = st.config_edit_lock.lock().unwrap();
+    let _edit = lock(&st.config_edit_lock);
     let mut seen = HashSet::new();
     // 与现有服务(含配置文件)查重——锁内做,并发同名 create 后者在写入前被拒
     for name in st.supervisor.names() {
@@ -138,7 +141,7 @@ pub async fn update(
     }
     let mut seen = HashSet::new();
     config::validate_service(&svc, &mut seen).map_err(WardenError::Config)?;
-    let _edit = st.config_edit_lock.lock().unwrap();
+    let _edit = lock(&st.config_edit_lock);
     let mut file = ConfigFile::load_or_create(&st.effective_config_path())?;
     file.replace_service(&svc)?;
     file.save()?;
@@ -157,7 +160,7 @@ pub async fn delete(
     State(st): State<AppState>,
     Path(name): Path<String>,
 ) -> WResult<impl IntoResponse> {
-    let _edit = st.config_edit_lock.lock().unwrap();
+    let _edit = lock(&st.config_edit_lock);
     st.supervisor.remove(&name)?;
     let mut file = ConfigFile::load_or_create(&st.effective_config_path())?;
     if let Err(e) = file.remove_service(&name) {
@@ -201,7 +204,7 @@ pub async fn get_config_file(
     Path(name): Path<String>,
 ) -> WResult<impl IntoResponse> {
     let h = st.supervisor.handle(&name)?;
-    let cfg = h.inner.lock().unwrap().config.clone();
+    let cfg = lock(&h.inner).config.clone();
     let path = cfg
         .config_file
         .ok_or_else(|| WardenError::ServiceNotFound(format!("{name} 未配置 config_file")))?;
@@ -252,7 +255,7 @@ pub async fn put_config_file(
     Json(body): Json<ConfigFileBody>,
 ) -> WResult<impl IntoResponse> {
     let h = st.supervisor.handle(&name)?;
-    let cfg = h.inner.lock().unwrap().config.clone();
+    let cfg = lock(&h.inner).config.clone();
     let path = cfg
         .config_file
         .ok_or_else(|| WardenError::ServiceNotFound(format!("{name} 未配置 config_file")))?;
@@ -303,7 +306,7 @@ pub async fn reload(State(st): State<AppState>) -> WResult<impl IntoResponse> {
     // reload 读到旧文件后,并发 CRUD 刚写入的 shared 会被旧内容覆盖回退。
     // std Mutex guard 不能跨 await —— apply_config(含 await)移到锁外执行。
     let cfg = {
-        let _edit = st.config_edit_lock.lock().unwrap();
+        let _edit = lock(&st.config_edit_lock);
         let cfg = config::Config::load(st.config_path.as_deref())?;
         // [proxy] 段热同步(P5):显式路由/domain/preserve_host 免重启生效;
         // 监听地址与证书路径的变更仍需重启(引擎 task 启动期绑定)。
@@ -311,7 +314,7 @@ pub async fn reload(State(st): State<AppState>) -> WResult<impl IntoResponse> {
         if let Some(shared) = &st.proxy_shared {
             match cfg.proxy.clone() {
                 Some(p) => {
-                    *shared.write().expect("proxy 锁中毒") = std::sync::Arc::new(p);
+                    *write(shared) = std::sync::Arc::new(p);
                     tracing::info!("[proxy] 路由热更新已生效(监听/证书变更需重启)");
                 }
                 None => {

@@ -1,0 +1,12 @@
+# cargo-deny 审计配置(2026-09-21 首轮:只开 advisories + bans)。
+# licenses/sources 未配置——需要时 `cargo deny check licenses` 前先补 allow 清单。
+# 运行:`cargo deny check advisories bans`(只看想看的检查项)
+
+[advisories]
+version = 2
+# yanked 版本仍被 lockfile 引用时告警(易被误判,先 warn 不拦)
+yanked = "warn"
+
+[bans]
+# 重复版本只盘点不拦截(传递依赖为主,现状 60 包,见 ROADMAP 2026-09-21)
+multiple-versions = "warn"

@@ -8,6 +8,8 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 
+use warden::lock::lock;
+
 /// 桌面共享状态(Tauri manage)。
 struct DesktopState {
     daemon: daemon::EmbeddedDaemon,
@@ -31,17 +33,17 @@ fn local_node_info(state: tauri::State<DesktopState>) -> NodeInfoDto {
 
 #[tauri::command]
 fn nodes_list(state: tauri::State<DesktopState>) -> Vec<nodes::RemoteNode> {
-    state.nodes.lock().unwrap().list().to_vec()
+    lock(&state.nodes).list().to_vec()
 }
 
 #[tauri::command]
 fn nodes_add(state: tauri::State<DesktopState>, node: nodes::RemoteNode) -> Result<(), String> {
-    state.nodes.lock().unwrap().add(node)
+    lock(&state.nodes).add(node)
 }
 
 #[tauri::command]
 fn nodes_remove(state: tauri::State<DesktopState>, url: String) -> Result<(), String> {
-    state.nodes.lock().unwrap().remove(&url)
+    lock(&state.nodes).remove(&url)
 }
 
 /// 打开 UI 入口(ServiceConfig.ui_url):http(s) 用默认浏览器,exe 直接启动,

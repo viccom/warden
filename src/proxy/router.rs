@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use crate::config::ProxyConfig;
+use crate::lock::read;
 use crate::proxy::SharedProxyConfig;
 use crate::supervisor::Supervisor;
 
@@ -47,7 +48,7 @@ impl HostRouter {
 
     /// 当前配置快照(读锁拷 Arc,每请求一次,开销可忽略)。
     fn cfg(&self) -> Arc<ProxyConfig> {
-        self.cfg.read().expect("proxy 配置锁中毒").clone()
+        read(&self.cfg).clone()
     }
 
     /// 规范化 host:转小写、剥离 `:port`。

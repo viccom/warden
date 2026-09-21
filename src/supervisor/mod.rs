@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::error::{WResult, WardenError};
+use crate::lock::lock;
 use crate::logs::{LogHub, RollingFile};
 use crate::model::{HealthStatus, LastExit, ProcMetrics, ProcState, RestartMode, ServiceConfig};
 
@@ -98,7 +99,7 @@ impl Supervisor {
     pub async fn start(&self, name: &str) -> WResult<()> {
         let handle = self.get(name)?;
         let cancel = {
-            let mut g = handle.inner.lock().unwrap();
+            let mut g = lock(&handle.inner);
             match &g.state {
                 ProcState::Running { .. }
                 | ProcState::Starting
@@ -126,7 +127,7 @@ impl Supervisor {
             cancel
         };
         let task = tokio::spawn(proc::supervise(Arc::clone(&handle), cancel));
-        handle.inner.lock().unwrap().task = Some(task);
+        lock(&handle.inner).task = Some(task);
         Ok(())
     }
 
@@ -149,7 +150,7 @@ impl Supervisor {
             .handles
             .iter()
             .map(|e| {
-                let g = e.inner.lock().unwrap();
+                let g = lock(&e.inner);
                 (g.config.name.clone(), g.config.priority)
             })
             .collect();
@@ -166,7 +167,7 @@ impl Supervisor {
             .into_iter()
             .filter(|n| {
                 self.get(n)
-                    .map(|h| h.inner.lock().unwrap().config.group.as_deref() == Some(group))
+                    .map(|h| lock(&h.inner).config.group.as_deref() == Some(group))
                     .unwrap_or(false)
             })
             .collect()
@@ -205,7 +206,7 @@ impl Supervisor {
 
     /// 启动所有 auto_start=true 的服务(daemon 启动时调用,按优先级顺序 + 就绪推进)。
     pub async fn start_auto(&self) {
-        self.start_ordered(|h| h.inner.lock().unwrap().config.auto_start)
+        self.start_ordered(|h| lock(&h.inner).config.auto_start)
             .await;
     }
 
@@ -234,7 +235,7 @@ impl Supervisor {
         loop {
             let settled = match self.get(name) {
                 Ok(h) => {
-                    let g = h.inner.lock().unwrap();
+                    let g = lock(&h.inner);
                     !matches!(g.state, ProcState::Starting)
                 }
                 Err(_) => true,
@@ -250,7 +251,7 @@ impl Supervisor {
     pub fn remove(&self, name: &str) -> WResult<()> {
         let handle = self.get(name)?;
         {
-            let g = handle.inner.lock().unwrap();
+            let g = lock(&handle.inner);
             match &g.state {
                 ProcState::Stopped | ProcState::Failed { .. } => {}
                 other => {
@@ -270,7 +271,7 @@ impl Supervisor {
     /// 删除仍要求停止(remove)。name 必须已存在(ServiceNotFound)。
     pub fn update(&self, config: ServiceConfig) -> WResult<()> {
         let handle = self.get(&config.name)?;
-        handle.inner.lock().unwrap().config = config;
+        lock(&handle.inner).config = config;
         Ok(())
     }
 
@@ -317,7 +318,7 @@ impl Supervisor {
     pub fn names(&self) -> Vec<String> {
         self.handles
             .iter()
-            .map(|e| e.inner.lock().unwrap().config.name.clone())
+            .map(|e| lock(&e.inner).config.name.clone())
             .collect()
     }
 
@@ -334,7 +335,7 @@ impl Supervisor {
                 // 耗时拖累(e2e 曾因此在慢机上 800ms 内采不到样而稳定失败)
                 for entry in self.handles.iter() {
                     let pid = {
-                        let g = entry.inner.lock().unwrap();
+                        let g = lock(&entry.inner);
                         match &g.state {
                             ProcState::Running { pid, .. } => Some(*pid),
                             _ => None,
@@ -342,7 +343,7 @@ impl Supervisor {
                     };
                     if let Some(pid) = pid {
                         if let Some(m) = metrics::sample_one(&sys, pid) {
-                            entry.inner.lock().unwrap().metrics = m;
+                            lock(&entry.inner).metrics = m;
                         }
                     }
                 }
@@ -361,7 +362,7 @@ impl Supervisor {
                 };
                 for entry in self.handles.iter() {
                     let pid = {
-                        let g = entry.inner.lock().unwrap();
+                        let g = lock(&entry.inner);
                         match &g.state {
                             ProcState::Running { pid, .. } => Some(*pid),
                             _ => None,
@@ -369,7 +370,7 @@ impl Supervisor {
                     };
                     if let Some(pid) = pid {
                         let set = ports::subtree_from(&index, pid);
-                        entry.inner.lock().unwrap().ports = ports::filter_listening(&rows, &set);
+                        lock(&entry.inner).ports = ports::filter_listening(&rows, &set);
                     }
                 }
             }
@@ -423,7 +424,7 @@ impl ProcHandle {
     }
 
     pub fn snapshot_status(&self) -> ServiceStatus {
-        let g = self.inner.lock().unwrap();
+        let g = lock(&self.inner);
         ServiceStatus {
             name: g.config.name.clone(),
             display_name: g.config.display_name.clone(),
@@ -450,7 +451,7 @@ impl ProcHandle {
     /// 主动停止:设 Stopping → cancel → 等待监护 task 结束。
     pub async fn shutdown(&self) -> WResult<()> {
         let cancel = {
-            let g = self.inner.lock().unwrap();
+            let g = lock(&self.inner);
             match &g.state {
                 ProcState::Stopped | ProcState::Failed { .. } => return Ok(()),
                 _ => g.cancel.clone(),
@@ -458,11 +459,11 @@ impl ProcHandle {
         };
         if let Some(c) = cancel {
             {
-                let mut g = self.inner.lock().unwrap();
+                let mut g = lock(&self.inner);
                 g.state = ProcState::Stopping;
             }
             c.cancel();
-            let task = self.inner.lock().unwrap().task.take();
+            let task = lock(&self.inner).task.take();
             if let Some(t) = task {
                 let _ = t.await;
             }
@@ -587,6 +588,6 @@ mod tests {
         );
         // 原句柄未被覆盖(priority 仍为 20)
         let h = sv.handle("a").unwrap();
-        assert_eq!(h.inner.lock().unwrap().config.priority, 20);
+        assert_eq!(lock(&h.inner).config.priority, 20);
     }
 }

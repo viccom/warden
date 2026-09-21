@@ -10,6 +10,7 @@ use std::time::Duration;
 use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
+use crate::lock::lock;
 use crate::logs::{LogHub, LogStream};
 use crate::model::{ProcState, RestartMode};
 
@@ -21,11 +22,11 @@ use super::ProcHandle;
 pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
     loop {
         // 每次重启取最新配置快照(运行中 update 保存的配置在此生效)
-        let cfg = handle.inner.lock().unwrap().config.clone();
+        let cfg = lock(&handle.inner).config.clone();
         let mut child = match spawn_child(&cfg) {
             Ok(c) => c,
             Err(e) => {
-                let mut g = handle.inner.lock().unwrap();
+                let mut g = lock(&handle.inner);
                 g.state = ProcState::Failed {
                     reason: format!("spawn 失败:{e}"),
                     exit_code: None,
@@ -78,13 +79,13 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
                     None
                 }
             };
-            handle.inner.lock().unwrap().job = job;
+            lock(&handle.inner).job = job;
         }
 
         // 设 Running,并在 restart_window 外重置计数(稳定运行后重新给机会)
         let now = Utc::now();
         {
-            let mut g = handle.inner.lock().unwrap();
+            let mut g = lock(&handle.inner);
             if let Some(last) = g.last_started_at {
                 let elapsed = (now - last).num_seconds().max(0) as u64;
                 if elapsed >= cfg.restart.restart_window_secs {
@@ -112,7 +113,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
             _ = cancel.cancelled() => {
                 // 优雅停止:发信号 → 等 graceful_timeout → 超时强杀整棵树
                 {
-                    let mut g = handle.inner.lock().unwrap();
+                    let mut g = lock(&handle.inner);
                     g.state = ProcState::Stopping;
                 }
                 handle.log.push(LogStream::Stdout, crate::logs::LEVEL_INFO, "[warden] 发送优雅停止信号");
@@ -127,7 +128,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
                     Err(_) => {
                         handle.log.push(LogStream::Stderr, crate::logs::LEVEL_WARN, "[warden] 优雅停止超时,强杀进程树");
                         {
-                            let g = handle.inner.lock().unwrap();
+                            let g = lock(&handle.inner);
                             if let Some(j) = &g.job {
                                 super::signal::force_kill_tree(j, pgid);
                             }
@@ -136,7 +137,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
                         let _ = child.wait().await;
                     }
                 }
-                let mut g = handle.inner.lock().unwrap();
+                let mut g = lock(&handle.inner);
                 g.state = ProcState::Stopped;
                 handle.log.push(LogStream::Stdout, crate::logs::LEVEL_INFO, "[warden] 已停止");
                 return;
@@ -145,7 +146,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
 
         // race 保护:wait 完成与 cancel 同时发生时按主动停止处理
         if cancel.is_cancelled() {
-            let mut g = handle.inner.lock().unwrap();
+            let mut g = lock(&handle.inner);
             g.state = ProcState::Stopped;
             return;
         }
@@ -158,7 +159,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
 
         // 记录最近一次自然退出(崩溃/正常退出;主动 stop 不经此路径),供 TUI/排查
         {
-            let mut g = handle.inner.lock().unwrap();
+            let mut g = lock(&handle.inner);
             g.last_exit = Some(crate::model::LastExit {
                 exit_code,
                 at: Utc::now(),
@@ -175,7 +176,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
 
         // 未启用自动重启 → Failed(历史行为保持)
         if matches!(effective_mode, RestartMode::Never) {
-            let mut g = handle.inner.lock().unwrap();
+            let mut g = lock(&handle.inner);
             g.state = ProcState::Failed {
                 reason: "进程退出且未启用 auto_restart".into(),
                 exit_code,
@@ -193,7 +194,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
         if matches!(effective_mode, RestartMode::Unexpected) {
             let exit = exit_code.unwrap_or(-1);
             if cfg.restart.expected_exit_codes.contains(&exit) {
-                let mut g = handle.inner.lock().unwrap();
+                let mut g = lock(&handle.inner);
                 g.state = ProcState::Stopped;
                 handle.log.push(
                     LogStream::Stdout,
@@ -206,7 +207,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
 
         // 重启决策:超 max_retries 熔断,否则退避后重试
         let (attempt, delay) = {
-            let mut g = handle.inner.lock().unwrap();
+            let mut g = lock(&handle.inner);
             if g.restart_count >= cfg.restart.max_retries {
                 g.state = ProcState::Failed {
                     reason: format!("重启次数超限({})", g.restart_count),
@@ -237,7 +238,7 @@ pub async fn supervise(handle: Arc<ProcHandle>, cancel: CancellationToken) {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
             _ = cancel.cancelled() => {
-                let mut g = handle.inner.lock().unwrap();
+                let mut g = lock(&handle.inner);
                 g.state = ProcState::Stopped;
                 return;
             }
