@@ -3,6 +3,8 @@
 //! 分层:平台采集(netstat2,得 `RawSocketRow` 中性行)→ `filter_listening`
 //! 纯过滤(可测核心)→ metrics task 周期写入 `ProcInner.ports`。
 //! UDP 只有"已绑定"概念(无 listen 状态),全部保留;TCP 仅保留 LISTEN。
+//! PID 子树索引(原 sysinfo `children_index`)已并入 `metrics::ProcSampler`
+//! (2026-10 重构:Linux 直读 /proc,弃 sysinfo 全表)。
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
@@ -116,17 +118,8 @@ pub(crate) fn collect_rows() -> Result<Vec<RawSocketRow>, String> {
 }
 
 // ── PID 子树(启动器形态服务:真正监听的是孙进程)──────────────────────
-
-/// 从 sysinfo 全表构建 parent→children 索引(metrics task 每轮一次)。
-pub(crate) fn children_index(sys: &sysinfo::System) -> HashMap<u32, Vec<u32>> {
-    let mut idx: HashMap<u32, Vec<u32>> = HashMap::new();
-    for (pid, proc) in sys.processes() {
-        if let Some(parent) = proc.parent() {
-            idx.entry(parent.as_u32()).or_default().push(pid.as_u32());
-        }
-    }
-    idx
-}
+// parent→children 索引的构建在 `metrics::ProcSampler::children_index`
+// (Linux 直扫 /proc 只读 ppid,每轮重建零积累;非 Linux sysinfo 全表)。
 
 /// root 及其全部后代(visited 防环)。已知局限:采样间隔内 PID 复用理论上可致
 /// 误报,2s 窗口概率可忽略(见 PLAN 文档),不处理。

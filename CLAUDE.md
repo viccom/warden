@@ -22,13 +22,13 @@ warden 是一个 **Rust 进程监护管理工具**(supervisord / pm2 风格的 s
 | `error.rs` | `WardenError`(thiserror + `#[non_exhaustive]` + `impl IntoResponse`)+ `WResult<T>` |
 | `model.rs` | `ServiceConfig` / `ProcState` / `RestartPolicy` / `HealthCheck` / `ProcMetrics` |
 | `logs.rs` | `LogHub`(VecDeque 环缓冲 2000 + broadcast 256 + 按日轮转文件) |
-| `supervisor/` | 监护引擎:`mod`(Supervisor + ProcHandle + ServiceStatus + 有序启停)+ `proc`(状态机/backoff/spawn/wait)+ `metrics`(sysinfo 采样)+ `ports`(监听端口发现:netstat2 采集 + PID 子树过滤)+ `health`(TCP 探测 + webhook 告警)+ `signal`(优雅停止信号 + Job Object 进程树 + 隐藏 console) |
+| `supervisor/` | 监护引擎:`mod`(Supervisor + ProcHandle + ServiceStatus + 有序启停)+ `proc`(状态机/backoff/spawn/wait)+ `metrics`(`ProcSampler`:Linux 直读 /proc 采样,非 Linux sysinfo 定向刷新)+ `procfs`(Linux /proc 最小读取层)+ `ports`(监听端口发现:netstat2 采集 + PID 子树过滤)+ `health`(TCP 探测 + webhook 告警)+ `signal`(优雅停止信号 + Job Object 进程树 + 隐藏 console) |
 | `service/` | OS 自注册:Windows(`sc.exe` + `define_windows_service` + SCM 控制 + UAC 提权)/ systemd(框架已写,未实测) |
 | `proxy/` | 反向代理(feature 门控):`mod`(引擎装配/SharedProxyConfig 热生效/路由级 metrics/启动与 drain)+ `router`(HostRouter:精确 > 通配单层 > auto=查 proxy=true 服务)+ `forward`(hyper-util 流式直传/WS 隧道/X-Forwarded-*/301/错误页 XSS 转义)+ `tls`(rustls TLS 终止 + 证书 mtime 30s 热重载 + 1h 到期检测告警 + 可选 renew_command 外部续期) |
 | `tui/` | ratatui 终端客户端:`api`(reqwest + SSE)/ `ui`(服务表格/详情/日志渲染)/ `mod`(事件循环) |
 | `api/` | axum `build_router` + token 鉴权中间件 + Tauri CORS + `routes_service`/`routes_logs`/`routes_health`/`routes_ui`(内置 Web 单页,`include_str!` 嵌入)/`routes_proxy`(代理状态 + 路由 CRUD,feature 门控)+ SSE |
 
-**技术栈**(对齐 rs-iot 版本栈,便于统一维护):tokio 1 / axum 0.8 / serde+toml(+`toml_edit` 保注释写回)/ thiserror+anyhow / clap / tracing(+appender)/ dashmap / sysinfo / `encoding_rs`(GBK 解码)/ `windows-service`(OS 注册)/ `ratatui`+`reqwest`(TUI)/ `netstat2`(端口发现);反代(feature 门控):`hyper`+`hyper-util`+`http-body-util`(流式直传)/ `rustls`+`tokio-rustls`+`hyper-rustls`(均 ring 后端,避开 aws-lc-rs 编译依赖)/ `x509-parser`+`webpki-roots`(证书到期解析/上游 TLS 锚),测试用 `rcgen`+`time` 现签证书。edition 2021, rust-version 1.81。Web UI 用 `include_str!` 零依赖嵌入(未引入 rust-embed);桌面版(Tauri 2)见 `desktop/`。
+**技术栈**(对齐 rs-iot 版本栈,便于统一维护):tokio 1 / axum 0.8 / serde+toml(+`toml_edit` 保注释写回)/ thiserror+anyhow / clap / tracing(+appender)/ dashmap / `encoding_rs`(GBK 解码)/ `windows-service`(OS 注册)/ `ratatui`+`reqwest`(TUI)/ `netstat2`(端口发现)/ 资源采样 **Linux 直读 /proc**(仅非 Linux 平台用 sysinfo,见 `supervisor/procfs.rs`);反代(feature 门控):`hyper`+`hyper-util`+`http-body-util`(流式直传)/ `rustls`+`tokio-rustls`+`hyper-rustls`(均 ring 后端,避开 aws-lc-rs 编译依赖)/ `x509-parser`+`webpki-roots`(证书到期解析/上游 TLS 锚),测试用 `rcgen`+`time` 现签证书。edition 2021, rust-version 1.81。Web UI 用 `include_str!` 零依赖嵌入(未引入 rust-embed);桌面版(Tauri 2)见 `desktop/`。
 
 **参考项目**:serviceMgr-tui(Go,OS 服务注册 + TUI 的蓝本)、rs-iot(Rust,技术栈与代码风格来源)。
 

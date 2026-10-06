@@ -84,7 +84,6 @@ bytes = "1"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6"
-sysinfo = "0.32"
 directories = "5"
 # 子进程输出编码解码(GBK/CP936 等中文编码),Phase 2
 encoding_rs = "0.8"
@@ -131,6 +130,11 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# 资源采样:仅非 Linux 平台(Linux 直读 /proc,见 src/supervisor/procfs.rs;
+# sysinfo 在 Linux 会滞留 /proc/<pid>/stat 句柄且死进程条目永不移除)
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+sysinfo = "0.32"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

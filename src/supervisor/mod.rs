@@ -9,6 +9,9 @@ pub mod health;
 pub mod metrics;
 pub mod ports;
 pub mod proc;
+/// Linux 直读 /proc 的资源采样底座(见 `metrics` 模块文档:弃 sysinfo 全表)。
+#[cfg(target_os = "linux")]
+pub mod procfs;
 pub mod signal;
 
 use std::path::PathBuf;
@@ -324,15 +327,30 @@ impl Supervisor {
 
     /// 启动后台 metrics 采样 task:周期遍历 Running 服务,按 PID 采 CPU/内存,
     /// 并刷新监听端口(服务 PID 子树内实际 LISTEN/绑定的 TCP/UDP,含孙进程)。
+    ///
+    /// 采样经 `metrics::ProcSampler`(Linux 直读 /proc;非 Linux sysinfo 定向
+    /// 刷新)——2026-10 弃 sysinfo 全表刷新,根除其 FD 滞留 + 死条目积累
+    /// (15 天 52 万 FD / 7.9 GB 实测,见 ROADMAP)。
     pub fn spawn_metrics(self: Arc<Self>, interval: Duration) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            let mut sys = sysinfo::System::new();
+            let mut sampler = metrics::ProcSampler::new();
             loop {
                 tokio::time::sleep(interval).await;
-                metrics::refresh(&mut sys);
                 // 先采样 CPU/内存:本 task 主职责不等待端口采集——实测 netstat2
                 // 全表采集可达数百 ms,若排在其后,metrics 新鲜度会被 netlink
                 // 耗时拖累(e2e 曾因此在慢机上 800ms 内采不到样而稳定失败)
+                let pids: Vec<u32> = self
+                    .handles
+                    .iter()
+                    .filter_map(|entry| {
+                        let g = lock(&entry.inner);
+                        match &g.state {
+                            ProcState::Running { pid, .. } => Some(*pid),
+                            _ => None,
+                        }
+                    })
+                    .collect();
+                sampler.refresh(&pids);
                 for entry in self.handles.iter() {
                     let pid = {
                         let g = lock(&entry.inner);
@@ -342,12 +360,12 @@ impl Supervisor {
                         }
                     };
                     if let Some(pid) = pid {
-                        if let Some(m) = metrics::sample_one(&sys, pid) {
+                        if let Some(m) = sampler.sample(pid) {
                             lock(&entry.inner).metrics = m;
                         }
                     }
                 }
-                let index = ports::children_index(&sys);
+                let index = sampler.children_index();
                 // 全表 socket 采集一次供全部服务共享;阻塞 OS 调用放 spawn_blocking
                 let rows = match tokio::task::spawn_blocking(ports::collect_rows).await {
                     Ok(Ok(r)) => r,

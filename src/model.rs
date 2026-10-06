@@ -282,7 +282,7 @@ impl ProcState {
     }
 }
 
-/// 资源采样(由 sysinfo 周期填充)。
+/// 资源采样(由 metrics task 经 `ProcSampler` 周期填充)。
 #[derive(Serialize, Clone, Debug, Default)]
 pub struct ProcMetrics {
     pub cpu_percent: f32,

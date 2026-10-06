@@ -90,7 +90,7 @@
 | CLI | clap | 4 (derive) |
 | 流式 | tokio-stream / futures-util / bytes | 0.1 / 0.3 / 1 |
 | 并发表 | dashmap | 6 |
-| 资源采集 | sysinfo | 0.32 |
+| 资源采集 | Linux 直读 /proc(非 Linux 用 sysinfo) | sysinfo 0.32 |
 | 时间 | chrono | 0.4 (serde) |
 | 其他 | async-trait / directories | 0.1 / 5 |
 | 配置文档级编辑 | toml_edit | 0.20(CRUD 写回,保注释) |
@@ -130,7 +130,8 @@ warden/                          workspace:根 crate warden + desktop/(桌面版
 │   ├── supervisor/
 │   │   ├── mod.rs               Supervisor 引擎(DashMap<name, Arc<ProcHandle>>)
 │   │   ├── proc.rs              单进程 spawn/wait/restart/backoff 状态机
-│   │   ├── metrics.rs           sysinfo 周期采样(全表刷新,含端口刷新触发)
+│   │   ├── metrics.rs           ProcSampler 周期采样(Linux 直读 /proc;含端口子树索引)
+│   │   ├── procfs.rs            Linux /proc 最小读取层(stat/statm/ppid 索引;仅 linux)
 │   │   ├── health.rs            TCP 健康检查 + webhook 告警
 │   │   ├── ports.rs             监听端口发现(netstat2 采集 + PID 子树过滤)
 │   │   └── signal.rs            优雅停止信号 + Job Object 进程树 + 隐藏 console
@@ -314,7 +315,7 @@ pub struct ProcMetrics {
 - **backoff**:第 n 次重试等待 `min(initial * factor^(n-1), max)`。例:1000ms → 2000 → 4000 → 8000 … 封顶 60000ms。
 - **stop(优雅,2026-08-14 起)**:发信号(Linux SIGTERM / Windows `CTRL_BREAK_EVENT`,独立进程组精确投递;CTRL_C 不跨 group 是 Windows quirk)→ 等待 `graceful_timeout_secs` → 超时 `TerminateJobObject` 强杀整棵进程树。每个子进程一个 Job Object(`KILL_ON_JOB_CLOSE`):warden 崩溃/退出时子进程树全死,无孤儿。无 console 宿主(Service 会话 0 / 桌面版 GUI)经 `ensure_hidden_console` 保证 CTRL_BREAK 可投递。
 - **日志接管**:spawn 后起两个 reader task,按行读 stdout/stderr → 推入该服务 `LogHub`(区分 stdout/stderr 标记)。
-- **metrics**:sysinfo 每 2s 全表刷新,按服务 PID 子树采 CPU/内存,写入 `ProcInner.metrics`(顺带刷新 `ports`)。
+- **metrics**(2026-10 重构):每 2s 经 `ProcSampler` 按已知服务 PID 采 CPU/内存写入 `ProcInner.metrics`——Linux 直读 `/proc/<pid>/stat`/`statm`(差分算 CPU%,starttime 防 PID 复用),非 Linux sysinfo 定向刷新。端口子树索引每轮由 `/proc` 直扫 ppid 重建(用完即弃)。**弃用 sysinfo 全表刷新的根因**:其在 Linux 滞留全部 `/proc/<pid>/stat` 句柄且死进程条目永不移除,生产实测 15 天泄漏 52 万 FD / 7.9 GB RSS、CPU 随条目数涨至 ~18%。
 - **有序启停**:`start_all`/`start_auto` 按 priority 升序(name 字典序 tie-break)启动 + **就绪推进**(每服务等到离开 Starting、上限 15s 再启动下一个,Failed/Restarting 不阻塞后续);`stop_all` 逆序(被依赖方最后停)。见 `Supervisor::ordered_names`/`start_ordered`。
 - **监听端口发现**(`supervisor/ports.rs`):metrics task 周期采集全系统 socket 表(netstat2,Windows GetExtendedTcp/UdpTable / Linux netlink)→ 按**服务 PID 子树**(含孙进程,启动器形态)过滤 TCP LISTEN / UDP 绑定 → 写入 `ProcInner.ports`,经 `ServiceStatus.listening_ports` 透出。UDP 仅"已绑定"语义(无 listen),不支持 UDP 健康检查。
 

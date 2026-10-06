@@ -18,7 +18,7 @@
 - [x] **3. model**:并入第 2 步
 - [x] **4. logs**:LogHub(VecDeque 环缓冲 + broadcast + 按日轮转文件)
 - [x] **5. supervisor**:引擎 + 状态机 + backoff + start/stop/restart/start-all/stop-all + supervisor_e2e
-- [x] **6. metrics**:sysinfo 周期采样(验证 Running 进程 metrics 非 0)
+- [x] **6. metrics**:周期采样(验证 Running 进程 metrics 非 0);2026-10 弃 sysinfo 全表→Linux 直读 /proc(见变更日志)
 - [x] **7. api**:build_router + token 鉴权中间件 + SSE 日志流 + api_flow
 - [x] **8. main + lib**:run_app(clap run 前台 + tracing 多 layer + graceful shutdown + auto_start)+ 冒烟全链路验证
 - [x] **9. 示例配置**:services.example.toml + read_example 解析测试
@@ -112,6 +112,8 @@
 ---
 
 ## 变更日志
+
+- **2026-10-06(根治 FD/内存泄漏 + CPU 负载)**:`supervisor/metrics` 弃用 sysinfo 全表刷新,重构为 `ProcSampler`(Linux 直读 `/proc/<pid>/stat`/`statm` 的新 `procfs.rs` 模块;非 Linux 保留 sysinfo 但改定向刷新)。**根因**(生产 15 天实测:RSS 7.9 GB / 524,347 个常开 FD / CPU ~18% 且随条目数单调上涨):sysinfo 0.32 在 Linux 把每个被刷新进程(含全部线程)的 `/proc/<pid>/stat` 句柄长期持有,且死进程条目永不移除——每 2s 一轮 `refresh_all()` 全系统扫描使条目无限累积,逼近 nofile 上限(已用 50%)后 warden 将无法打开任何文件/socket、全部被监护服务失管。新实现:调用间零共享状态、FD 瞬时(用完即关)、CPU% 语义与 sysinfo 数值连续(100%=一核,上限=核数×100,首轮 0),另增 starttime 防 PID 复用(优于旧实现)。已知局限:非 Linux 端 sysinfo 全表刷新的条目积累未实测,后续在 Windows 上压测确认。
 
 - **2026-08-14**:仓库初始化。完成 Phase 1 第 0 步(脚手架 + DESIGN.md + ROADMAP.md + services.example.toml)。技术栈对齐 rs-iot,架构定为自带监护 + daemon 自注册 OS 服务(P2)。
 - **2026-08-14(续)**:完成 Phase 1 第 1-5 步(error / model / config / logs / supervisor + 22 测试全绿,e2e 0.68s)。发现并记录局限:`stop` 不杀进程树(cmd 包装的孙子孤儿),Phase 4 用 Job Object 解决。
