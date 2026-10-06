@@ -113,6 +113,11 @@ impl ProcSampler {
                     },
                 );
             }
+            // 服务停止/重启(新 PID)后,旧 PID 基线已无意义(同 PID 重来也有
+            // starttime 复用守卫),retain 掉——否则崩溃循环服务(每次重启
+            // 换 PID)会在两张表里无限累积,恰是本次重构要根除的模式。
+            self.prev.retain(|k, _| pids.contains(k));
+            self.last.retain(|k, _| pids.contains(k));
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -252,5 +257,20 @@ mod tests {
             s.sample(u32::MAX - 1).is_none(),
             "不存在的 PID 采样应返回 None"
         );
+    }
+
+    /// 意图:消失的服务 PID(停止/重启换号)不得在采样表里长期滞留——
+    /// 否则崩溃循环服务无限累积条目(与 sysinfo 死条目同族)。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sampler_prunes_vanished_pids() {
+        let pid = std::process::id();
+        let mut s = ProcSampler::new();
+        s.refresh(&[pid]);
+        assert!(s.sample(pid).is_some());
+        // 下一轮 pid 集不再包含该 PID(模拟服务已停)→ 两表都应清空它
+        s.refresh(&[pid + 1]); // pid+1 几乎必然不存在,仅占位触发 retain
+        assert!(s.sample(pid).is_none(), "消失 PID 的缓存应被清理");
+        assert!(s.prev.is_empty() && s.last.is_empty());
     }
 }

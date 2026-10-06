@@ -30,13 +30,20 @@ pub(crate) struct ProcStat {
 /// CLK_TCK(每秒时钟 tick 数),进程级 sysconf 缓存。
 pub(crate) fn clock_ticks() -> u64 {
     static CLK: OnceLock<u64> = OnceLock::new();
-    *CLK.get_or_init(|| unsafe { libc::sysconf(libc::_SC_CLK_TCK).max(1) as u64 })
+    *CLK.get_or_init(|| {
+        // SAFETY: sysconf 查询只读常量,无并发/句柄风险;Linux 上恒为 100,
+        // 失败路径(-1/0)由 max(1) 兜底(仅作除零防护,不影响除法正确性量级)。
+        unsafe { libc::sysconf(libc::_SC_CLK_TCK).max(1) as u64 }
+    })
 }
 
 /// 页大小(字节),进程级 sysconf 缓存。
 fn page_size() -> u64 {
     static PAGE: OnceLock<u64> = OnceLock::new();
-    *PAGE.get_or_init(|| unsafe { libc::sysconf(libc::_SC_PAGESIZE).max(1) as u64 })
+    *PAGE.get_or_init(|| unsafe {
+        // SAFETY: 同 clock_ticks,只读常量查询。
+        libc::sysconf(libc::_SC_PAGESIZE).max(1) as u64
+    })
 }
 
 /// 逻辑 CPU 数(封顶用,与 sysinfo 旧语义一致:CPU% 上限 = 核数 × 100)。
