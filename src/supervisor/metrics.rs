@@ -6,8 +6,10 @@
 //!   `/proc/<pid>/stat` 句柄长期持有、死进程条目永不移除——生产实测 15 天
 //!   泄漏 52 万 FD / 7.9 GB RSS,且 CPU 随条目数单调上涨(约 18%)。
 //! - **非 Linux(Windows/macOS)**:保留 sysinfo,但改为**定向刷新**已知 PID
-//!   (`ProcessesToUpdate::Some`),不再全表扫描;无 /proc 即无 FD 滞留问题
-//!   (全表条目积累面留待 Windows 实测,见 ROADMAP 已知局限)。
+//!   (`ProcessesToUpdate::Some`);端口子树索引用**一次性快照**重建(见
+//!   [`ProcSampler::children_index`])——sysinfo 各平台实现均为 insert-only,
+//!   任何跨轮共享的全表实例都会无限累积死进程条目。残余有界量:定向刷新
+//!   实例里服务历史 PID 的条目(每次服务重启 +1 条,几 KB 量级)。
 //!
 //! CPU% 语义与旧 sysinfo 输出保持一致:`100% = 一核打满`,多核进程可超 100,
 //! 上限 = 核数 × 100(`compute_cpu_pct`);首轮无基线时 CPU 为 0、内存照常。
@@ -140,8 +142,9 @@ impl ProcSampler {
     /// parent→children 索引(端口子树归属用;每轮重建,无跨轮状态)。
     ///
     /// Linux:直扫 `/proc` 只读 ppid(数百进程毫秒级);
-    /// 非 Linux:sysinfo 全表进程刷新(Windows 快照语义,端口归属需要全表
-    /// 父子关系,无法只刷已知 PID)。
+    /// 非 Linux:**每轮全新 System 快照、用完即弃**——sysinfo 各平台实现均为
+    /// insert-only(windows/system.rs 同样无 retain),共享实例做全表刷新会让
+    /// 死进程条目无限累积(Windows 上是 Linux 泄漏问题的同族轻量版)。
     pub fn children_index(&mut self) -> HashMap<u32, Vec<u32>> {
         #[cfg(target_os = "linux")]
         {
@@ -149,9 +152,10 @@ impl ProcSampler {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            self.sys.refresh_processes(ProcessesToUpdate::All, true);
+            let mut snapshot = System::new();
+            snapshot.refresh_processes(ProcessesToUpdate::All, true);
             let mut idx: HashMap<u32, Vec<u32>> = HashMap::new();
-            for (pid, proc) in self.sys.processes() {
+            for (pid, proc) in snapshot.processes() {
                 if let Some(parent) = proc.parent() {
                     idx.entry(parent.as_u32()).or_default().push(pid.as_u32());
                 }
