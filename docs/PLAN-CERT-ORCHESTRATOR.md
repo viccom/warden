@@ -1,6 +1,9 @@
 # 实施方案:证书编排器(warden 编排 lego 实现 UI 一键申请/续期证书)
 
-> **状态:立项待实施**(2026-09-20 需求定案并存档,尚未编写任何实现代码)。
+> **状态:立项待实施**(2026-09-20 需求定案并存档,尚未编写任何实现代码;
+> 2026-10-07 对照当前代码复审修订:首次签发重启边界定为 a 方案(§7)、C3 env_file
+> 默认路径修订为配置文件目录、fake-lego 垫片归位 tests/helpers、补 AGENT-GUIDE.md
+> 同步项与 lego 实测细节)。
 > 实施时按 §5 步骤走 TDD,每步独立可验证可停。
 
 ## 1. 背景与目标
@@ -34,7 +37,7 @@ P3 已实现证书外部托管协同(`src/proxy/tls.rs`:30s mtime 热重载 + 1h
 |---|---|---|
 | C1 | 编排工具 | **只编排 lego v5+**:单二进制、linux/windows 全平台一致(warden 本身双平台发布)、凭据走 env/--env-file、hook 语义已实测(TESTING-ACME.md 路线 C) |
 | C2 | lego 获取 | **检测优先 + 可自动下载**:显式 `lego_path` → `<data_dir>/bin/lego[.exe]` → PATH;找不到则从 GitHub release 下载对应平台二进制(不可达时 UI 回退指引手动放置) |
-| C3 | 凭据存储 | **独立凭据文件**:默认 `~/.config/warden/acme.env`(unix 0600,覆盖式写入,不入主配置),lego 经 `--env-file` 消费;API GET 永不回显凭据 |
+| C3 | 凭据存储 | **独立凭据文件**:默认 `<配置文件目录>/acme.env`(unix 0600,覆盖式写入,不入主配置),lego 经 `--env-file` 消费;API GET 永不回显凭据。**2026-10-07 修订**(原 `~/.config/warden/`:Windows Service 下 `~` 漂移到 systemprofile,且与配置基准目录锚定原则不符;配置目录经 `AppState::effective_config_path()` 天然可达) |
 | C4 | 表单范围 | **通用 env 键值入口**:UI 提供通用"DNS 环境变量"键值 textarea + 常用 provider(腾讯云 tencentcloud/阿里云 alidns/Cloudflare 等)变量名提示;天然支持 lego 全部 150+ provider,零逐家维护 |
 | C5 | 自动续期 | **warden 内部驱动**:复用 `spawn_cert_expiry` 1h 周期,剩余天数 < `renew_days` 时触发 lego renew(沿用 24h 成功冷却);lego 编排配置完整时 `renew_command` 被忽略(避免双重驱动) |
 
@@ -64,8 +67,8 @@ TESTING-ACME.md 路线 C)。
 4. **自动下载**:GitHub releases latest 按目标平台映射资产(linux→`tar.gz`/windows→`zip`,GOOS/GOARCH 取 `std::env::consts`);reqwest stream 下载(**依赖已有**,`features=["stream"]`);**调系统 tar 解包**(Windows 10+ 自带 bsdtar 可解 zip——零新解压依赖);unix `chmod +x`;`lego --version` 验证。
 5. **签发/续期编排(`issue`/`renew_once` 共用)**:
    - 前置:写 acme.env(0600,unix `OpenOptionsExt::mode`;windows 尽力而为)→ 若 `persist`(默认 true)同步写回 `[proxy.acme]` 非敏感字段(config_edit 锁内,照 routes_proxy 事务模板:锁 → 校验 → `ConfigFile` → 写回 → save → sync);
-   - 执行:`lego run --accept-tos --email .. --server .. --dns <provider> -d .. -d .. --path <data_dir>/lego --env-file <acme.env>`(续期加 `--renew-force`);
-   - 成功后:warden 代码把 `<path>/certificates/<主域>.crt/.key` **原子拷贝**(tmp+rename,复用 config_edit 的 atomic_write 经验)到 `cert_file/key_file`(未配置则默认 `<data_dir>/ssl/{fullchain.pem,privkey.pem}` 并写回配置)→ 主动触发 `CertReloader::reload_if_changed`(需把 Arc<CertReloader> 从 spawn_tls_serve 装配处共享到 AppState/编排器)。
+   - 执行:`lego run --accept-tos --email .. --server .. --dns <provider> -d <裸域> -d "*.<裸域>" --path <data_dir>/lego --env-file <acme.env> --no-random-sleep`(续期加 `--renew-force`)。**裸域必须排第一个 `-d`**(lego 按首个域名命名产物、通配符替换为 `_`,裸域在前才得到干净的 `<domain>.crt/.key`);`--no-random-sleep` 为编排场景决策——官方默认随机 sleep 可达数分钟,任务长时间无输出观测性差,防风暴由 warden 侧 1h 周期 + 24h 冷却承担,不依赖 lego 随机延迟;
+   - 成功后:warden 代码把 `<path>/certificates/<主域>.crt/.key` **原子拷贝**(tmp+rename,复用 config_edit 的 atomic_write 经验)到 `cert_file/key_file`(未配置则默认 `<data_dir>/ssl/{fullchain.pem,privkey.pem}` 并写回配置)→ 主动触发 `CertReloader::reload_if_changed`(需把 Arc<CertReloader> 从 spawn_tls_serve 装配处共享到 AppState/编排器)。**热重载仅覆盖「https 已在跑」的场景**:daemon 启动时证书文件缺失 → `CertReloader::new` 即读文件失败 → https 入口整体降级(热重载/到期检测 task 均未启动),首次签发落盘后**无对象可热触发**,UI 须明示「重启 warden 后 https 生效」(§7 方案 a 定案)。
 
 ### 4.3 配置 schema(`src/config.rs` AcmeConfig +6 字段,serde default 齐全)
 
@@ -92,7 +95,8 @@ renew_days  = 30                   # 剩余 < N 天自动续期;0 = 关闭自动
   下拉(常用几家 + 自定义)+ 通用 env 键值 textarea(placeholder 给腾讯云等变量名示例)+
   域名预填(从 domain 推导,可改)/ server;
 - 任务进度区:状态 + 输出尾部(mono 样式,轮询 GET cert 的 task 字段);
-- 手动"立即续期"按钮(存在证书时可用)。
+- 手动"立即续期"按钮(存在证书时可用);
+- 首次签发成功且签发前 https 未启动 → 明示「证书已就绪,重启 warden 后 https 生效」(§7 冷启动边界)。
 
 ### 4.5 依赖
 
@@ -102,8 +106,8 @@ renew_days  = 30                   # 剩余 < N 天自动续期;0 = 关闭自动
 
 1. **配置层**:AcmeConfig 新字段 + 解析/默认值单测 + example 注释。
 2. **certmgr 核心**:CertTaskManager / resolve_lego / 平台资产映射纯函数 / run_lego 执行器(超时/输出环形缓冲)+ 单测(执行逻辑按"执行器可注入"组织,单测层用内存假执行器,e2e 层仍走真实 spawn——见步骤 3)。
-3. **API + 装配**:4 端点 + AppState/路由注册 + **fake-lego e2e**——垫片为**进仓库的 `src/bin/fake-lego.rs`**(std-only ~20 行:`--version` 假输出;`run` 时把预置自签证书拷到 `--path/certificates/`),e2e 经 `env!("CARGO_BIN_EXE_fake-lego")` 取路径(Cargo 原生机制:integration test 前**构建期**自动编译所有 [[bin]] 并缓存,源码不变不重编,测试零编译调用、开箱即用)。**不采用测试运行时 rustc 直调**:绕过 cargo 缓存、Windows 输出名要手工补 .exe 分支;也不采用 .cmd 垫片:Windows 上 std spawn `.cmd` 走 cmd.exe 代理(BatBadBut/CVE-2024-24576 修复分支),参数转义语义与真实可执行不同。[[bin]] 垫片让被 spawn 对象与真实 lego 同为原生可执行、unix/windows 同一份逻辑,进程边界/参数/超时/输出捕获的测试语义与生产一致。代价说明:cargo build 多编一个 std-only 小 bin(不进发布产物——release.yml 只打包 warden(.exe);不影响 desktop,不依赖任何 feature)。覆盖 issue → 执行 → 拷贝落盘 → daemon 热重载(TLS 握手验新证书)全链;CI 不连真 LE。
-4. **自动续期**:`spawn_cert_expiry` 接 `renew_once`(lego 编排分支,C5 优先级)+ e2e(自签证书 notAfter 拨到 renew_days 内,断言 fake lego 被调用 + 落盘更新)。
+3. **API + 装配**:4 端点 + AppState/路由注册 + **fake-lego e2e**——垫片为**进仓库的 `tests/helpers/fake_lego.rs` + Cargo.toml 显式 `[[bin]]` 条目**(bin 名 `fake-lego` 不变;对齐既有 graceful_target/stamp_target 等 5 个测试辅助二进制的仓库约定,而非 src/bin 自动发现;std-only ~20 行:`--version` 假输出;`run` 时把预置自签证书拷到 `--path/certificates/`),e2e 经 `env!("CARGO_BIN_EXE_fake-lego")` 取路径(Cargo 原生机制:integration test 前**构建期**自动编译所有 [[bin]] 并缓存,源码不变不重编,测试零编译调用、开箱即用)。**不采用测试运行时 rustc 直调**:绕过 cargo 缓存、Windows 输出名要手工补 .exe 分支;也不采用 .cmd 垫片:Windows 上 std spawn `.cmd` 走 cmd.exe 代理(BatBadBut/CVE-2024-24576 修复分支),参数转义语义与真实可执行不同。[[bin]] 垫片让被 spawn 对象与真实 lego 同为原生可执行、unix/windows 同一份逻辑,进程边界/参数/超时/输出捕获的测试语义与生产一致。代价说明:cargo build 多编一个 std-only 小 bin(不进发布产物——release.yml 仅拷贝 warden(.exe)/warden-desktop(.exe),package-cli-dist.sh 亦按名义名只取 warden;不影响 desktop,不依赖任何 feature)。覆盖 issue → 执行 → 拷贝落盘 →(daemon 启动时证书已在)热重载(TLS 握手验新证书)全链 + 无证书冷启动形态断言「需重启」提示(§7 a 方案);CI 不连真 LE。
+4. **自动续期**:`spawn_cert_expiry` 接 `renew_once`(lego 编排分支,C5 优先级;触发时从 state 现读 acme/lego 参数——该 task 现按值捕获 `AcmeConfig`,运行期改配置持旧值,编排分支不沿用此形态)+ e2e(自签证书 notAfter 拨到 renew_days 内,断言 fake lego 被调用 + 落盘更新)。
 5. **Web UI**:证书卡片区 + 表单 + 任务面板。
 6. **文档 + 收尾**:TESTING-ACME.md 补"路线 D:warden 编排(本功能)";ROADMAP 变更日志;双 feature 形态 `cargo fmt --all --check` + `clippy --all-targets --jobs 6 -- -D warnings` + `cargo test --jobs 6` 全绿;真机冒烟:真实下载 lego + `lego --version`。
 
@@ -119,13 +123,16 @@ renew_days  = 30                   # 剩余 < N 天自动续期;0 = 关闭自动
 | `src/proxy/tls.rs` | spawn_cert_expiry 加 lego 自动续期分支(或抽到 certmgr) |
 | `web/index.html` | 证书卡片区 + 表单 + 任务面板 |
 | `config/services.example.toml` | [proxy.acme] 新字段注释 |
-| `src/bin/fake-lego.rs` | **新建**:e2e 测试垫片(std-only,仅测试链路;非 warden 发布组件) |
+| `tests/helpers/fake_lego.rs` + Cargo.toml `[[bin]]` | **新建**:e2e 测试垫片(std-only,仅测试链路;非 warden 发布组件) |
 | `tests/certmgr_e2e.rs` | **新建**:fake-lego 全链 e2e(issue/续期/落盘热重载/自动续期接线) |
-| `docs/TESTING-ACME.md` 等 | 路线 D/变更日志 |
+| `docs/TESTING-ACME.md` | 路线 D:warden 编排(本功能) |
+| `docs/AGENT-GUIDE.md` | [proxy.acme] 新字段表 + 4 端点入 API 册(项目约定:改 API/配置字段必须同步,否则手册与实现脱节) |
+| `docs/ROADMAP.md` | 变更日志 |
 
 ## 7. 风险与已知边界
 
 - **真实签发验证延后**:LE 同域名重复证书 **5 张/周**限速(2026-09-20 联调已耗 4 张),CI/手测全用 fake lego;真签发演练待限速窗口过后按 TESTING-ACME.md 命令执行。
+- **首次签发不热生效(方案 a,2026-10-07 复审定案)**:daemon 启动时证书文件缺失 → https 入口整体降级,证书热重载/到期检测 task 均未启动(`CertReloader::new` 即读文件失败,装配全在 lib.rs https 启动的 Ok 分支内);编排器首次签发落盘后无 CertReloader 可触发,**UI 明示「重启 warden 后 https 生效」**——与既有「监听地址与证书路径变更需重启」边界同口径(AGENT-GUIDE)。已评估不采用:动态拉起 https 入口(方案 b,装配块抽可重入函数,改动面大且涉 drain/JoinSet 重入)与无证书自签占位先监听(方案 c,rcgen 须由 dev-dependencies 转正式依赖,违背零新 crate)。
 - **内网下载不可达**:github.com 不可达时 install 失败,UI 回退指引手动放置(检测路径不受影响)。
 - **Windows 权限**:acme.env 无法设 0600(ACL 从简),文档注明;下载解包依赖系统自带 tar.exe(Win10 1803+)。
 - **续期失败重试**:沿用现有语义——仅成功计 24h 冷却,失败按 1h 周期重试;lego renew 未到期时幂等退出 0,失败重试撞 LE 限速风险已评估可接受(TESTING-ACME.md 已注明 renew_command 需幂等)。

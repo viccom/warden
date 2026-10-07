@@ -47,6 +47,12 @@ path = "tests/helpers/port_listener_target.rs"
 name = "keys_probe"
 path = "tests/helpers/keys_probe.rs"
 
+# 测试辅助二进制:证书编排器 e2e 垫片(模拟 lego CLI 最小交互面,
+# tests/certmgr_e2e.rs 经 env!("CARGO_BIN_EXE_fake-lego") 引用;非发布组件)
+[[bin]]
+name = "fake-lego"
+path = "tests/helpers/fake_lego.rs"
+
 [features]
 default = ["reverse-proxy"]
 reverse-proxy = [

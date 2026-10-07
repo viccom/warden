@@ -17,6 +17,8 @@ use crate::config::Config;
 use crate::supervisor::Supervisor;
 
 pub mod auth;
+#[cfg(feature = "reverse-proxy")]
+pub mod routes_cert;
 pub mod routes_health;
 pub mod routes_logs;
 #[cfg(feature = "reverse-proxy")]
@@ -44,6 +46,9 @@ pub struct AppState {
     /// 反代路由级 metrics(引擎写,API 读)。
     #[cfg(feature = "reverse-proxy")]
     pub proxy_metrics: Arc<crate::proxy::ProxyMetrics>,
+    /// 证书编排器(P6):任务面板 + 热重载触发 + lego 状态缓存。
+    #[cfg(feature = "reverse-proxy")]
+    pub cert: Arc<crate::proxy::certmgr::CertMgr>,
 }
 
 impl AppState {
@@ -96,6 +101,8 @@ pub fn build_state(cfg: Config, config_path: Option<PathBuf>) -> AppState {
         proxy_shared,
         #[cfg(feature = "reverse-proxy")]
         proxy_metrics: Arc::new(crate::proxy::ProxyMetrics::new()),
+        #[cfg(feature = "reverse-proxy")]
+        cert: Arc::new(crate::proxy::certmgr::CertMgr::new()),
     }
 }
 
@@ -176,6 +183,15 @@ pub fn build_router(state: AppState) -> Router {
             .route(
                 "/api/v1/proxy/routes/{host}",
                 put(routes_proxy::update_route).delete(routes_proxy::delete_route),
+            )
+            // 证书编排器端点(P6)
+            .route("/api/v1/proxy/cert", get(routes_cert::get_cert))
+            .route("/api/v1/proxy/cert/acme", put(routes_cert::put_acme))
+            .route("/api/v1/proxy/cert/issue", post(routes_cert::post_issue))
+            .route("/api/v1/proxy/cert/renew", post(routes_cert::post_renew))
+            .route(
+                "/api/v1/proxy/cert/lego/install",
+                post(routes_cert::post_lego_install),
             );
     }
     router

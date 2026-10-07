@@ -210,9 +210,22 @@ preserve_host = false               # false = 转发时改写 Host 为上游;tru
 connect_timeout_ms = 5000           # 上游连接超时(仅约束连接建立)
 upstream_ca_file = "/ssl/ca.pem"    # https 上游私有 CA(缺省用内置根)
 
-[proxy.acme]                        # 证书到期检测(不申请证书,只管监控/告警/兜底续期命令)
+[proxy.acme]                        # 证书到期检测 + 证书编排器(lego)
 expire_warn_days = 21               # 剩余天数低于此值 → warn + alert_webhook
 renew_command = "acme.sh --renew -d example.com"   # 可选;到期前执行(sh -c / cmd /C,600s 超时,24h 冷却)
+# ── 证书编排器字段(下方 6 项;email + dns_provider 配齐 = 编排模式)──
+# email = "ops@example.com"         # ACME 账户邮箱(编排器签发/续期用)
+# dns_provider = "tencentcloud"     # lego --dns 的 provider 名;DNS 凭据存独立 acme.env(不入本文件)
+# server = "letsencrypt"            # letsencrypt / letsencryptstaging(测试省配额)或 directory URL
+# lego_path = ""                    # 显式 lego 路径;空 = 自动检测(<data_dir>/bin → PATH,可经 API 自动下载)
+# env_file = ""                     # 凭据文件;空 = <本配置文件目录>/acme.env(unix 0600;GET 永不回显)
+# renew_days = 30                   # 剩余 < N 天自动续期(lego);0 = 关闭;编排模式下 renew_command 被忽略
+# lego_version = "5"                # 自动安装的 lego 版本(仅配置文件,不经 Web 设置面):
+#                                    #   空/"latest" = GitHub latest;"5"/"v5" = 主版本跟踪(建议固定——lego
+#                                    #   大版本有破坏性变化,如 v4→v5 CLI 重排/provider 更名);"v5.5.2" = 精确 tag
+# lego_mirror = ""                  # 备用下载镜像 URL 模板(仅配置文件),含 {tag}/{asset} 占位符;
+#                                    #   GitHub 直连失败时按模板重试,如 gh-proxy 类前缀:
+#                                    #   "https://gh-proxy.com/https://github.com/go-acme/lego/releases/download/{tag}/{asset}"
 
 [[proxy.route]]                     # 显式路由(可多条);显式优先于 auto
 host = "app.example.com"            # 精确 host,或 "*.<domain>" 单层通配;禁路径/端口
@@ -225,8 +238,12 @@ to   = "http://127.0.0.1:9000"      # 显式上游 URL;或写 service = "<服务
 http/https 双入口同配时,HTTP 入口全量 301 跳 https。
 路由/域名/`preserve_host` 改动经 `reload` 或路由 API 热生效;**监听地址与证书路径变更需重启 daemon**。
 
-> 泛域名证书申请推荐交给外部 ACME 客户端(acme.sh / lego)完成,DNS-01 签好后 warden 直接消费证书文件
-> (30s 热重载 + 到期监控)。完整实战与踩坑见仓库 `docs/TESTING-ACME.md`。
+> 泛域名证书两条路线任选:① **warden 编排器**(Web UI「反向代理 → 证书编排」一键申请/续期,ACME 由
+> lego 二进制执行,凭据存独立 `acme.env` 不进本文件;见 `docs/TESTING-ACME.md` 路线 D);② 外部
+> ACME 客户端(acme.sh / lego)手动签好后 warden 直接消费证书文件(30s 热重载 + 到期监控)。
+> 完整实战与踩坑见仓库 `docs/TESTING-ACME.md`。
+> 边界:daemon 启动时证书文件已存在 https 才在跑——**首次签发成功后需重启 warden 让 https 生效**
+> (续期场景不受影响,落盘即热重载)。
 
 ---
 
@@ -297,6 +314,11 @@ warden [--config <path>] <COMMAND>
 | POST | `/api/v1/proxy/routes` | 新增路由,body = ProxyRoute JSON |
 | PUT | `/api/v1/proxy/routes/{host}` | 更新路由(host 为键,不可改名;改名 = 删旧建新) |
 | DELETE | `/api/v1/proxy/routes/{host}` | 删除路由 |
+| GET | `/api/v1/proxy/cert` | 证书编排状态:证书(SAN/剩余天数)+ lego(版本/来源)+ acme 非敏感字段 + 凭据文件状态(存在性/条目数)+ 最近任务(含输出尾部;凭据永不回显) |
+| PUT | `/api/v1/proxy/cert/acme` | 编排设置写回:body `{email, dns_provider, server, renew_days, domain}`(空字符串 = 清空该字段;`domain` 剥 `*.` 前缀归一;`renew_days` 0=关闭 缺省=不动,1..=90)。写 `[proxy].domain` + `[proxy.acme]` 非敏感字段,保注释,domain 热生效 |
+| POST | `/api/v1/proxy/cert/issue` | 一键签发。body `{email, dns_provider, env:{K:V}, domains?:[], server?}`;凭据**非空覆盖写** 0600 `acme.env`,**留空 = 沿用既有**(防误清空);任务运行中 409 |
+| POST | `/api/v1/proxy/cert/renew` | 手动续期(`--renew-force`;需 [proxy.acme] email/dns_provider 已配) |
+| POST | `/api/v1/proxy/cert/lego/install` | 自动下载安装 lego(GitHub latest → `<data_dir>/bin`;内网不可达时任务面板给手动放置指引) |
 
 ### 4.3 关键端点样例(真实响应)
 

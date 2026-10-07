@@ -388,6 +388,11 @@ async fn proxy_endpoints_require_auth_when_token_set() {
     )
     .await;
     assert_eq!(resp.status(), 401, "写端点无 token 同样 401");
+    // 证书编排端点族(含凭据入口 issue)同受鉴权——公网暴露时的第一道防线
+    let resp = hit_auth(&state, "GET", "/api/v1/proxy/cert", None, None).await;
+    assert_eq!(resp.status(), 401, "证书状态端点无 token 应 401");
+    let resp = hit_auth(&state, "POST", "/api/v1/proxy/cert/issue", None, None).await;
+    assert_eq!(resp.status(), 401, "签发端点(凭据入口)无 token 应 401");
     let resp = hit_auth(&state, "GET", "/api/v1/proxy", None, Some("t-123")).await;
     assert_eq!(resp.status(), 200, "正确 token 放行");
     let resp = hit_auth(&state, "GET", "/api/v1/proxy", None, Some("wrong")).await;

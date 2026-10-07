@@ -4,6 +4,7 @@
 //! `spawn_http` + `tls::spawn_tls_serve`(P2 双入口:http 可 301 → https)。
 //! 路由表经 [SharedProxyConfig] 共享——reload/CRUD 写、每请求读,热生效。
 
+pub mod certmgr;
 pub mod forward;
 pub mod router;
 pub mod tls;

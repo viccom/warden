@@ -5,7 +5,8 @@ warden 不内置 ACME 流程(决策 D13):签发/续期/DNS challenge 一概由�
 **消费证书文件 + mtime 热重载 + 检测到期 + 可选触发续期命令**。
 三者与 warden 的耦合点只有一对文件路径(`cert_file`/`key_file`),
 换工具零改动。本文两条主路线均于 **2026-09-20 在 `*.gxai.site` 真实
-签发/续期实测通过**,命令可直接照抄。
+签发/续期实测通过**,命令可直接照抄;P6 起 warden 提供**路线 D(编排器)**,
+把路线 C 的命令收进 Web UI 一键完成(协议仍由 lego 执行,D13 不变)。
 
 ## warden 侧职责(工具无关)
 
@@ -130,6 +131,52 @@ lego run --accept-tos --email <you@example.com> --server letsencrypt \
   `renew_command = "C:\warden\lego\renew.cmd"` 指向包装脚本(内含
   env-file 调用 lego + 拷贝)即可,到期检测/热重载链路完全一致。
 
+## 路线 D:warden 证书编排器(P6,2026-10-07 落地)
+
+把路线 C 的「装 lego、写凭据、拼命令、配 cron」收进 warden UI:
+Web「反向代理 → 证书编排」卡片一键申请/续期,ACME 协议仍由 lego 外部
+二进制执行(D13 演进,非推翻)。实现见 `src/proxy/certmgr.rs`,
+设计决策 C1–C5 见 `docs/PLAN-CERT-ORCHESTRATOR.md`。
+
+- **lego 获取**:自动检测(显式 `lego_path` → `<data_dir>/bin/` → PATH),
+  未装时可经「自动安装」下载(系统 tar 解包,零新依赖)。版本由
+  `[proxy.acme] lego_version` 控制:空 = latest;`"5"` = 主版本跟踪(**建议固定
+  主版本**——v4→v5 曾有 CLI 重排/provider 更名的破坏性变化);`"v5.5.2"` =
+  精确 tag。`lego_mirror` 配备用下载镜像模板(`{tag}`/`{asset}` 占位符,
+  gh-proxy 类前缀即可),GitHub 直连失败时自动回退。内网全不可达时任务面板
+  给手动放置指引。
+- **凭据**:Web 表单「DNS 凭据」键值对 → **非空覆盖写**独立 `acme.env`,
+  **留空 = 沿用既有文件**(重签时不必重录,也防误清空)
+  (缺省 `<配置文件目录>/acme.env`,unix 0600 且覆盖写后强制收敛权限,
+  **不进 services.toml**,API GET 永不回显)。
+- **签发命令**(warden 构造,裸域排第一——lego 产物文件名规则;
+  `--no-random-sleep` 为编排决策:观测性优先,防风暴由 warden 侧
+  1h 周期 + 24h 成功冷却承担):
+  `lego run --accept-tos --email <邮箱> --server <目录> --dns <provider>
+  -d <裸域> -d "*.<裸域>" --path <data_dir>/lego --env-file <acme.env>
+  --no-random-sleep`(续期加 `--renew-force`)。
+- **落盘**:产物原子拷贝到 `cert_file`/`key_file`(未配置则默认
+  `<data_dir>/ssl/` 并写回配置)→ 主动触发热重载 → `[proxy.acme]`
+  非敏感字段写回(保注释;写回失败且证书路径已配置时仅面板告警不判任务
+  失败——证书本就可用;`env_file` 仅显式配置时才回写,缺省跟随配置目录)。
+- **自动续期**(C5):`[proxy.acme]` 配齐 `email + dns_provider` 即接管
+  ——1h 到期检测周期内剩余 < `renew_days` 时自动触发(成功计 24h 冷却,
+  失败下周期重试);此模式下 `renew_command` 被忽略(避免双重驱动)。
+- **边界(方案 a)**:daemon 启动时证书文件已存在 https 才在跑——
+  **首次签发成功后需重启 warden 让 https 生效**(UI 会明示);续期场景
+  落盘即热重载,不受影响。
+- **设置面**(2026-10-07 补):Web「证书编排」卡内「编排设置」可持久配置
+  泛域名根域(`[proxy].domain`,与 auto 路由共用)、ACME 邮箱、DNS provider、
+  ACME 目录、**自动续签开关 + 阈值天数**(`renew_days`,0=关),凭据只显示
+  「已配置(n 项)/未配置」状态不回显——经 `PUT /api/v1/proxy/cert/acme`
+  写回(空字符串=清空);反代未配 domain/https_bind 时证书卡给软绑定引导
+  (证书服务于反代 https 入口,功能仍可独立使用)。
+- API:`GET /api/v1/proxy/cert` + `PUT .../cert/acme`(设置写回)+
+  `POST .../issue|renew|lego/install`(单任务互斥,运行中 409;任务面板
+  流式展示 lego 输出)。
+- CI/测试用 `tests/helpers/fake_lego.rs` 垫片(`[[bin]]`),不连真 LE;
+  **真签发演练已于 2026-10-07 通过**(`*.ts.gxai.site`,见下方实测记录)。
+
 ## 通用注意
 
 - **LE 同域名限速**:重复证书(duplicate certificate)**5 张/周**。
@@ -156,6 +203,7 @@ lego run --accept-tos --email <you@example.com> --server letsencrypt \
 |---|---|---|---|
 | 2026-09-20 | `gxai.site` + `*.gxai.site` | acme.sh(master,dns_tencent) | 签发 ✓ → install-cert 落盘 `/home/ncpe/sslcert/gxai-site/` ✓ → ARI 续期自动排程 2026-11-18 ✓ → TLS 握手/链验证 ✓ |
 | 2026-09-20 | `gxai.site` + `*.gxai.site` | lego v5.6.0(tencentcloud) | 签发 ✓ → `--renew-force` 续期 ×2 ✓ → 脚本 deploy-hook 落盘 ✓ → 产物 `openssl verify` ✓ |
+| 2026-10-07 | `ts.gxai.site` + `*.ts.gxai.site` | **warden 证书编排器**(自动安装 lego v5.5.2,tencentcloud) | 全链 ✓:API 自动安装(GitHub latest)→ 一键签发 **74s**(真 LE,DNS-01 双域名传播通过)→ `acme.env` 0600 且 GET 不回显 ✓ → 配置保注释写回 ✓ → 重启后 https 入口起 → `curl --resolve` 走反代 **200** + `SSL certificate verify ok`(系统信任库验真 LE 链,通配 SAN 匹配)✓;`openssl s_client` Verify return code 0 ✓ |
 
 环境:内网机 10.83.40.196;`gxai.site` 公网权威在 DNSPod(beech/only.dnspod.net),
 本机可直连 acme-v02.api.letsencrypt.org。

@@ -123,6 +123,61 @@ impl ConfigFile {
         Ok(())
     }
 
+    /// 设置 [proxy] cert_file/key_file(证书编排器按默认路径落盘后写回,
+    /// 使 https_bind+证书对完整)。[proxy] 段不存在则创建。
+    pub fn set_proxy_cert_paths(&mut self, cert: &Path, key: &Path) -> WResult<()> {
+        let proxy = proxy_table_mut(&mut self.doc)?;
+        proxy["cert_file"] = toml_edit::value(cert.display().to_string());
+        proxy["key_file"] = toml_edit::value(key.display().to_string());
+        Ok(())
+    }
+
+    /// upsert [proxy.acme] 编排器字段(None 字段保留现有值;段不存在则创建)。
+    /// 只写非敏感字段——DNS 凭据永不入配置文件(独立 0600 的 acme.env,决策 C3)。
+    /// 字符串字段 `Some("")` = 显式清空(删键),供设置面 PUT 全量语义使用。
+    pub fn upsert_proxy_acme(&mut self, p: &AcmePersist) -> WResult<()> {
+        let proxy = proxy_table_mut(&mut self.doc)?;
+        if !proxy.contains_key("acme") {
+            proxy.insert("acme", Item::Table(Table::new()));
+        }
+        let acme = proxy["acme"]
+            .as_table_mut()
+            .ok_or_else(|| WardenError::Config("配置文件的 [proxy.acme] 段不是表".into()))?;
+        let fields: [(&str, &Option<String>); 4] = [
+            ("email", &p.email),
+            ("dns_provider", &p.dns_provider),
+            ("server", &p.server),
+            ("env_file", &p.env_file),
+        ];
+        for (k, v) in fields {
+            if let Some(v) = v {
+                if v.is_empty() {
+                    acme.remove(k);
+                } else {
+                    acme[k] = toml_edit::value(v.clone());
+                }
+            }
+        }
+        if let Some(days) = p.renew_days {
+            acme["renew_days"] = toml_edit::value(i64::from(days));
+        }
+        Ok(())
+    }
+
+    /// 设置/清空 [proxy] domain(空串 = 删键)。证书编排设置面与 auto 路由共用
+    /// 同一根域,经此写回;写后由调用方 sync_engine 热生效。
+    /// 友善归一:小写化 + 剥 `*.` 前缀(根域按纯裸域存储,与校验规则一致)。
+    pub fn set_proxy_domain(&mut self, domain: &str) -> WResult<()> {
+        let proxy = proxy_table_mut(&mut self.doc)?;
+        if domain.is_empty() {
+            proxy.remove("domain");
+        } else {
+            let d = domain.trim().trim_start_matches("*.").to_lowercase();
+            proxy["domain"] = toml_edit::value(d);
+        }
+        Ok(())
+    }
+
     /// 按 host 删除 [proxy.route] 条目;返回是否存在。
     pub fn remove_proxy_route(&mut self, host: &str) -> WResult<bool> {
         let arr = proxy_route_array_mut(&mut self.doc)?;
@@ -145,14 +200,29 @@ impl ConfigFile {
     }
 }
 
-/// 取(或初始化)`[[proxy.route]]` 数组;[proxy] 存在但非表/route 非数组时报错。
-fn proxy_route_array_mut(doc: &mut Document) -> WResult<&mut ArrayOfTables> {
+/// [proxy.acme] 编排器写回字段(None = 保留现有值不动;字符串 Some("") = 清空)。
+pub struct AcmePersist {
+    pub email: Option<String>,
+    pub dns_provider: Option<String>,
+    pub server: Option<String>,
+    pub env_file: Option<String>,
+    /// 自动续期阈值天数(0 = 关闭;None = 不动)。
+    pub renew_days: Option<u32>,
+}
+
+/// 取(或初始化)[proxy] 表;存在但非表时报错。
+fn proxy_table_mut(doc: &mut Document) -> WResult<&mut Table> {
     if !doc.contains_key("proxy") {
         doc.insert("proxy", Item::Table(Table::new()));
     }
-    let proxy = doc["proxy"]
+    doc["proxy"]
         .as_table_mut()
-        .ok_or_else(|| WardenError::Config("配置文件的 [proxy] 段不是表".into()))?;
+        .ok_or_else(|| WardenError::Config("配置文件的 [proxy] 段不是表".into()))
+}
+
+/// 取(或初始化)`[[proxy.route]]` 数组;[proxy] 存在但非表/route 非数组时报错。
+fn proxy_route_array_mut(doc: &mut Document) -> WResult<&mut ArrayOfTables> {
+    let proxy = proxy_table_mut(doc)?;
     if !proxy.contains_key("route") {
         proxy.insert("route", Item::ArrayOfTables(ArrayOfTables::new()));
     }
@@ -532,6 +602,127 @@ mod tests {
         let cfg = crate::config::Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(!cfg.services[0].auto_start, "a 不应被改动");
         assert!(cfg.services[1].auto_start, "b 应为 auto_start=true");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 意图:编排器写回 [proxy.acme] 只动指定键——既有键(expire_warn_days)
+    /// 与注释原样保留,None 字段不覆盖(P6)。
+    #[test]
+    fn upsert_acme_preserves_other_keys_and_comments() {
+        let dir = tmpdir("acme");
+        let path = dir.join("services.toml");
+        std::fs::write(
+            &path,
+            "[proxy]\nhttp_bind = \"0.0.0.0:8080\"\n\n\
+             [proxy.acme]\n# 到期告警阈值\nexpire_warn_days = 14\nrenew_days = 7\n",
+        )
+        .unwrap();
+
+        let mut f = ConfigFile::load(&path).unwrap();
+        f.upsert_proxy_acme(&AcmePersist {
+            email: Some("ops@example.com".into()),
+            dns_provider: Some("tencentcloud".into()),
+            server: None,
+            env_file: Some(dir.join("acme.env").display().to_string()),
+            renew_days: None, // 不动既有 renew_days = 7
+        })
+        .unwrap();
+        f.save().unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("# 到期告警阈值"),
+            "未触及键的注释应保留:{text}"
+        );
+        let p = crate::config::Config::parse(&text).unwrap().proxy.unwrap();
+        assert_eq!(p.acme.expire_warn_days, 14, "既有键不应被重置");
+        assert_eq!(p.acme.renew_days, 7);
+        assert_eq!(p.acme.email.as_deref(), Some("ops@example.com"));
+        assert_eq!(p.acme.dns_provider.as_deref(), Some("tencentcloud"));
+        // server 为 None 未写:保持缺省 letsencrypt(未被覆盖)
+        assert_eq!(p.acme.server, "letsencrypt");
+        assert!(p.acme.env_file.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 意图:[proxy]/[proxy.acme] 段全无时,首次写回创建段且产出合法 TOML。
+    #[test]
+    fn upsert_acme_creates_sections_when_absent() {
+        let dir = tmpdir("acme-new");
+        let path = dir.join("services.toml");
+        let mut f = ConfigFile::load_or_create(&path).unwrap();
+        f.set_proxy_cert_paths(&dir.join("ssl/fullchain.pem"), &dir.join("ssl/privkey.pem"))
+            .unwrap();
+        f.upsert_proxy_acme(&AcmePersist {
+            email: Some("a@b.c".into()),
+            dns_provider: Some("alidns".into()),
+            server: Some("letsencryptstaging".into()),
+            env_file: None,
+            renew_days: Some(21),
+        })
+        .unwrap();
+        f.save().unwrap();
+
+        let p = crate::config::Config::parse(&std::fs::read_to_string(&path).unwrap())
+            .unwrap()
+            .proxy
+            .unwrap();
+        assert_eq!(
+            p.cert_file.as_deref(),
+            Some(dir.join("ssl/fullchain.pem").to_str().unwrap())
+        );
+        assert_eq!(p.acme.email.as_deref(), Some("a@b.c"));
+        assert_eq!(p.acme.server, "letsencryptstaging");
+        assert_eq!(p.acme.renew_days, 21, "renew_days Some 应写入");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 意图:设置面 PUT 全量语义——字符串 Some("") 清空删键、renew_days
+    /// 可写 0(关闭);[proxy] domain 可设置/更新/清空且注释保留。
+    #[test]
+    fn upsert_acme_clear_semantics_and_set_proxy_domain() {
+        let dir = tmpdir("acme-clear");
+        let path = dir.join("services.toml");
+        std::fs::write(
+            &path,
+            "[proxy]\n# 根域\ndomain = \"old.example.com\"\n\n\
+             [proxy.acme]\nemail = \"ops@example.com\"\ndns_provider = \"alidns\"\nrenew_days = 30\n",
+        )
+        .unwrap();
+
+        let mut f = ConfigFile::load(&path).unwrap();
+        f.set_proxy_domain("*.new.example.com").unwrap();
+        f.upsert_proxy_acme(&AcmePersist {
+            email: Some(String::new()), // 显式清空
+            dns_provider: Some("tencentcloud".into()),
+            server: None,
+            env_file: None,
+            renew_days: Some(0), // 0 = 关闭自动续期(仍是有效值)
+        })
+        .unwrap();
+        f.save().unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# 根域"), "domain 行注释应保留:{text}");
+        let p = crate::config::Config::parse(&text).unwrap().proxy.unwrap();
+        assert_eq!(
+            p.domain.as_deref(),
+            Some("new.example.com"),
+            "通配前缀应剥除"
+        );
+        assert!(p.acme.email.is_none(), "Some(\"\") 应删键");
+        assert_eq!(p.acme.dns_provider.as_deref(), Some("tencentcloud"));
+        assert_eq!(p.acme.renew_days, 0);
+
+        // 清空 domain:删键
+        let mut f = ConfigFile::load(&path).unwrap();
+        f.set_proxy_domain("").unwrap();
+        f.save().unwrap();
+        let p = crate::config::Config::parse(&std::fs::read_to_string(&path).unwrap())
+            .unwrap()
+            .proxy
+            .unwrap();
+        assert!(p.domain.is_none(), "空串应删除 domain 键");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -31,9 +31,16 @@ log_dir       = "./logs"                  # warden 自身日志目录(按日滚�
 # # connect_timeout_ms = 5000              # 上游连接超时(缺省 5000;仅约束连接建立)
 # # preserve_host = false                 # 转发时 Host 重写为上游;true = 保留客户端 Host(路由级可覆盖)
 # # upstream_ca_file = "/ssl/ca.pem"       # https 上游私有 CA(缺省 webpki 内置根)
-# # [proxy.acme]                          # 到期检测(P3);协同流程见 docs/TESTING-ACME.md
+# # [proxy.acme]                          # 到期检测(P3)+ 证书编排器(P6,warden 编排 lego)
 # # expire_warn_days = 21                  # 剩余低于此值 → tracing warn + alert_webhook
 # # renew_command = "acme.sh --renew -d x" # 可选:到期前 warden 执行(sh -c,600s 超时,24h 冷却)
+# # ── 以下为编排器字段(lego 编排配置完整时 renew_command 被忽略)──
+# # email = "ops@example.com"              # ACME 账户邮箱(编排器签发/续期用)
+# # dns_provider = "tencentcloud"          # lego --dns 的 provider;DNS 凭据存独立 acme.env(不入本文件)
+# # server = "letsencrypt"                 # letsencrypt / letsencryptstaging(测试省配额)或 directory URL
+# # lego_path = ""                         # 显式 lego 路径;空 = 自动检测(data/bin → PATH,可经 API 自动下载)
+# # env_file = ""                          # 凭据文件;空 = <本配置文件目录>/acme.env(unix 0600)
+# # renew_days = 30                        # 剩余 < N 天自动续期;0 = 关闭(手动 renew API 仍可用)
 # [[proxy.route]]                          # 显式路由(可多条;与 auto 并存时显式优先)
 # host = "app.example.com"                  # 精确 host 或 *.单层通配(须为 *.<domain>)
 # to   = "http://127.0.0.1:9000"           # 显式上游;或 service = "rs-iot" 引用被监护服务

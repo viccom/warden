@@ -139,7 +139,10 @@ pub struct ProxyConfig {
     pub acme: AcmeConfig,
 }
 
-/// P3:证书到期检测配置([proxy.acme])。
+/// P3:证书到期检测 + P6 编排器配置([proxy.acme])。
+/// 编排器配置完整(email + dns_provider)时自动续期由 warden 驱动 lego,
+/// `renew_command` 被忽略(避免双重驱动,决策 C5);DNS 凭据不入本段
+/// (独立 0600 的 acme.env,决策 C3)。
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct AcmeConfig {
     /// 剩余天数低于此值 → 告警(tracing + alert_webhook);缺省 21。
@@ -147,8 +150,38 @@ pub struct AcmeConfig {
     pub expire_warn_days: u32,
     /// 可选:到期前 warden 主动执行的外部续期命令(带超时与日志捕获);
     /// 未配置则完全依赖外部托管侧(1Panel/acme.sh)自续期。
+    /// lego 编排配置完整时被忽略(C5 优先级)。
     #[serde(default)]
     pub renew_command: Option<String>,
+    /// 编排器:显式 lego 二进制路径;None = 自动检测(`<data_dir>/bin/` → PATH,C2)。
+    #[serde(default)]
+    pub lego_path: Option<String>,
+    /// ACME 账户邮箱(编排器签发/续期用;与 lego 账号绑定,按 --path 存储在 lego 侧)。
+    #[serde(default)]
+    pub email: Option<String>,
+    /// ACME 目录:lego shortcode(letsencrypt / letsencryptstaging)或 directory URL。
+    #[serde(default = "default_acme_server")]
+    pub server: String,
+    /// lego `--dns` 的 DNS provider 名(如 tencentcloud;凭据经 acme.env 注入,C4)。
+    #[serde(default)]
+    pub dns_provider: Option<String>,
+    /// 凭据文件路径;None = `<配置文件目录>/acme.env`(C3;unix 0600,不入主配置)。
+    #[serde(default)]
+    pub env_file: Option<String>,
+    /// 剩余天数低于此值 → 编排器自动续期(lego renew);0 = 关闭自动续期(C5)。
+    #[serde(default = "default_acme_renew_days")]
+    pub renew_days: u32,
+    /// 自动安装 lego 的版本规格:空/`latest` = GitHub latest;`5`/`v5` = 主版本
+    /// 跟踪(该主版本最新);`v5.5.2` = 精确 tag。**建议固定主版本**——lego
+    /// 大版本有过破坏性变化(v4→v5 CLI 重排/provider 更名),编排命令形态
+    /// 按固定主版本验证。仅配置文件定义(不经 Web 设置面)。
+    #[serde(default)]
+    pub lego_version: Option<String>,
+    /// 备用下载镜像 URL 模板,含 `{tag}` 与 `{asset}` 占位符(如
+    /// `https://gh-proxy.com/https://github.com/go-acme/lego/releases/download/{tag}/{asset}`)。
+    /// GitHub 直连失败时按模板重试;空 = 无备用。仅配置文件定义。
+    #[serde(default)]
+    pub lego_mirror: Option<String>,
 }
 
 impl Default for AcmeConfig {
@@ -156,8 +189,24 @@ impl Default for AcmeConfig {
         Self {
             expire_warn_days: default_expire_warn_days(),
             renew_command: None,
+            lego_path: None,
+            email: None,
+            server: default_acme_server(),
+            dns_provider: None,
+            env_file: None,
+            renew_days: default_acme_renew_days(),
+            lego_version: None,
+            lego_mirror: None,
         }
     }
+}
+
+fn default_acme_server() -> String {
+    "letsencrypt".to_string()
+}
+
+fn default_acme_renew_days() -> u32 {
+    30
 }
 
 fn default_expire_warn_days() -> u32 {
@@ -1146,7 +1195,8 @@ upstream_ca_file = "/ssl/ca.pem"
     }
 
     /// 意图:[proxy.acme] 缺省时 expire_warn_days=21、renew_command=None;
-    /// 显式配置时透传(P3 两形态:外部托管只检测 / warden 主动续期)。
+    /// 编排器新字段(P6)缺省齐全(server=letsencrypt、renew_days=30),
+    /// 显式配置时透传(P3 两形态:外部托管只检测 / warden 主动续期 + P6 编排)。
     #[test]
     fn proxy_acme_defaults_and_parse() {
         let p = Config::parse("[proxy]\nhttp_bind = \"0.0.0.0:8080\"\n")
@@ -1155,16 +1205,31 @@ upstream_ca_file = "/ssl/ca.pem"
             .unwrap();
         assert_eq!(p.acme.expire_warn_days, 21, "缺省告警阈值 21 天");
         assert!(p.acme.renew_command.is_none());
+        assert!(p.acme.lego_path.is_none());
+        assert!(p.acme.email.is_none());
+        assert_eq!(p.acme.server, "letsencrypt", "缺省 ACME 目录");
+        assert!(p.acme.dns_provider.is_none());
+        assert!(p.acme.env_file.is_none());
+        assert_eq!(p.acme.renew_days, 30, "缺省自动续期阈值 30 天");
 
         let p = Config::parse(
             "[proxy]\nhttp_bind = \"0.0.0.0:8080\"\n\
-             [proxy.acme]\nexpire_warn_days = 14\nrenew_command = \"acme.sh -- renew\"\n",
+             [proxy.acme]\nexpire_warn_days = 14\nrenew_command = \"acme.sh -- renew\"\n\
+             email = \"ops@example.com\"\ndns_provider = \"tencentcloud\"\n\
+             server = \"letsencryptstaging\"\nenv_file = \"/etc/warden/acme.env\"\n\
+             lego_path = \"/opt/lego\"\nrenew_days = 14\n",
         )
         .unwrap()
         .proxy
         .unwrap();
         assert_eq!(p.acme.expire_warn_days, 14);
         assert_eq!(p.acme.renew_command.as_deref(), Some("acme.sh -- renew"));
+        assert_eq!(p.acme.lego_path.as_deref(), Some("/opt/lego"));
+        assert_eq!(p.acme.email.as_deref(), Some("ops@example.com"));
+        assert_eq!(p.acme.server, "letsencryptstaging");
+        assert_eq!(p.acme.dns_provider.as_deref(), Some("tencentcloud"));
+        assert_eq!(p.acme.env_file.as_deref(), Some("/etc/warden/acme.env"));
+        assert_eq!(p.acme.renew_days, 14);
     }
 
     /// 意图:https_bind 已配但证书对缺失 → TLS 无法启动,必须 warn

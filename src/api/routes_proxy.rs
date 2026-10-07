@@ -143,7 +143,8 @@ fn validate_route(st: &AppState, route: &ProxyRoute, cur: &config::ProxyConfig) 
 }
 
 /// 当前文件中的 [proxy](文件是唯一数据源;与 shared 的差异以文件为准重建)。
-fn file_proxy(st: &AppState) -> WResult<config::ProxyConfig> {
+/// routes_cert(证书编排端点)复用。
+pub(crate) fn file_proxy(st: &AppState) -> WResult<config::ProxyConfig> {
     let cfg = config::Config::load(st.config_path.as_deref())
         .map_err(|e| WardenError::Config(format!("重读配置失败:{e}")))?;
     Ok(cfg.proxy.unwrap_or_else(|| config::ProxyConfig {
@@ -162,7 +163,8 @@ fn file_proxy(st: &AppState) -> WResult<config::ProxyConfig> {
 
 /// 写回后同步引擎:重读文件 → 写 shared(引擎下一请求即用新路由表)。
 /// 返回引擎状态文案(无 [proxy] 启动/段被移除 → restart_required/stale)。
-fn sync_engine(st: &AppState) -> WResult<&'static str> {
+/// routes_cert(设置面写回 domain)复用。
+pub(crate) fn sync_engine(st: &AppState) -> WResult<&'static str> {
     let cfg = config::Config::load(st.config_path.as_deref())
         .map_err(|e| WardenError::Config(format!("重读配置失败:{e}")))?;
     match (&st.proxy_shared, cfg.proxy) {

@@ -25,8 +25,8 @@ use crate::proxy::{forward, ProxyState, DRAIN_LIMIT};
 /// 证书热重载周期(生产;测试经 `spawn_cert_reload` 参数压缩)。
 pub const CERT_RELOAD_PERIOD: Duration = Duration::from_secs(30);
 
-/// 证书到期检测周期(P3)。
-const CERT_CHECK_PERIOD: Duration = Duration::from_secs(3600);
+/// 证书到期检测周期(P3;`spawn_cert_expiry` 参数化,测试压缩)。
+pub const CERT_CHECK_PERIOD: Duration = Duration::from_secs(3600);
 
 /// 外部续期命令的执行超时(防挂死;acme.sh DNS-01 通常 < 60s,留足余量)。
 const RENEW_TIMEOUT: Duration = Duration::from_secs(600);
@@ -59,6 +59,11 @@ impl CertReloader {
     /// 当前配置构建 acceptor(TlsAcceptor 构造成本为一次 Arc clone)。
     pub fn acceptor(&self) -> TlsAcceptor {
         TlsAcceptor::from(read(&self.current).clone())
+    }
+
+    /// 当前监听的证书路径(编排器检测落盘路径与监听路径漂移用)。
+    pub fn cert_path(&self) -> &Path {
+        &self.cert_path
     }
 
     /// mtime 变化则重载;失败保留旧配置并返回错误文案(调用方记日志)。
@@ -243,22 +248,27 @@ fn expiry_should_warn(days: i64, warn_days: u32) -> bool {
     days < warn_days as i64
 }
 
-/// 证书到期检测 task(P3):周期解析 notAfter;剩余 < expire_warn_days 时
-/// 告警(tracing warn + 可选 webhook,对齐 health 告警形态),并在配置了
-/// renew_command 时触发外部续期(冷却 24h,超时强杀)。
+/// 证书到期检测 task(P3+P6):周期解析 notAfter;剩余 < expire_warn_days 时
+/// 告警(tracing warn + 可选 webhook,对齐 health 告警形态)。续期两级:
+/// ① lego 编排(P6,C5 优先):`auto_renew` 触发时**现读文件配置**判定
+///    (email+dns_provider 完整、阈值 renew_days、24h 冷却、单任务互斥);
+/// ② `renew_command` 兜底(P3,编排配置完整时被忽略,避免双重驱动;
+///    冷却 24h,超时强杀)。
 /// 每次检测 INFO 一行剩余天数(可观测,便于确认检测链路活着)。
 pub fn spawn_cert_expiry(
     cert_path: PathBuf,
     acme: AcmeConfig,
     webhook: Option<String>,
     shutdown: CancellationToken,
+    check_period: Duration,
+    auto_renew: Option<Arc<crate::proxy::certmgr::AutoRenew>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut last_renew: Option<SystemTime> = None;
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => break,
-                _ = tokio::time::sleep(CERT_CHECK_PERIOD) => {
+                _ = tokio::time::sleep(check_period) => {
                     let days = match cert_expiry_days(&cert_path) {
                         Ok(d) => d,
                         Err(e) => {
@@ -267,19 +277,28 @@ pub fn spawn_cert_expiry(
                         }
                     };
                     tracing::info!("[proxy] 证书剩余 {days} 天({})", cert_path.display());
-                    if !expiry_should_warn(days, acme.expire_warn_days) {
+                    if expiry_should_warn(days, acme.expire_warn_days) {
+                        // 到期告警(每次检测都发:剩余天数递减,webhook 侧按文案去重)
+                        let msg = format!(
+                            "[warden] 证书临近过期:剩余 {days} 天(阈值 {} 天),证书 {}",
+                            acme.expire_warn_days,
+                            cert_path.display()
+                        );
+                        tracing::warn!("[proxy] {msg}");
+                        send_alert(&webhook, "cert_expiry", &msg);
+                    }
+                    // ① lego 编排自动续期(C5 优先;内部完成全部判定)
+                    if let Some(ar) = &auto_renew {
+                        ar.check_and_trigger(days);
+                    }
+                    // ② renew_command 兜底:编排配置完整时忽略(C5)
+                    if auto_renew.as_ref().is_some_and(|ar| ar.lego_ready()) {
                         continue;
                     }
-                    // 到期告警(每次检测都发:剩余天数递减,webhook 侧按文案去重)
-                    let msg = format!(
-                        "[warden] 证书临近过期:剩余 {days} 天(阈值 {} 天),证书 {}",
-                        acme.expire_warn_days,
-                        cert_path.display()
-                    );
-                    tracing::warn!("[proxy] {msg}");
-                    send_alert(&webhook, "cert_expiry", &msg);
-                    // 可选外部续期(冷却 24h,防每小时循环反复执行)
                     if let Some(cmd) = acme.renew_command.as_deref().filter(|c| !c.is_empty()) {
+                        if !expiry_should_warn(days, acme.expire_warn_days) {
+                            continue;
+                        }
                         let cooled = last_renew.map_or(true, |t| {
                             t.elapsed().map_or(true, |d| d >= RENEW_COOLDOWN)
                         });

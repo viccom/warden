@@ -158,6 +158,9 @@ pub async fn serve_with_shutdown(
             };
             match attempt.await {
                 Ok((listener, port, reloader)) => {
+                    // 编排器注入热重载句柄(P6):签发/续期落盘后可即时触达
+                    // (https 未启动时无句柄——冷启动边界见 PLAN-CERT-ORCHESTRATOR §7)
+                    state.cert.set_reloader(reloader.clone());
                     let shared = state
                         .proxy_shared
                         .clone()
@@ -179,18 +182,31 @@ pub async fn serve_with_shutdown(
                         tls::CERT_RELOAD_PERIOD,
                         shutdown.clone(),
                     ));
-                    // P3:到期检测(证书路径与 acme 配置;webhook 复用 daemon 告警)
+                    // P3+P6:到期检测(证书路径与 acme 配置;webhook 复用 daemon 告警)+
+                    // lego 编排自动续期句柄(C5:触发时现读文件配置,编排完整时
+                    // renew_command 被忽略)
+                    let auto_renew = std::sync::Arc::new(crate::proxy::certmgr::AutoRenew::new(
+                        state.cert.clone(),
+                        state.effective_config_path(),
+                        state.data_dir.clone(),
+                        state.config_edit_lock.clone(),
+                    ));
                     proxy_tasks.push(tls::spawn_cert_expiry(
                         cert,
                         pc.acme.clone(),
                         alert_webhook.clone(),
                         shutdown.clone(),
+                        tls::CERT_CHECK_PERIOD,
+                        Some(auto_renew),
                     ));
                     tracing::info!("[warden] 反代 https 已启动:{bind}");
                     https_port = Some(port);
                 }
                 Err(e) => {
                     tracing::error!("[warden] 反代 https 启动失败({bind}):{e:?}(降级 http 直转)");
+                    tracing::warn!(
+                        "[warden] 证书到期检测与自动续期未启动(依赖 https 入口;恢复监听需重启)"
+                    );
                 }
             }
         }

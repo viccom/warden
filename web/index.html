@@ -290,6 +290,40 @@
          background: var(--panel); border: 1px solid var(--border); color: var(--sub); }
   .tag.err { color: #e5484d; border-color: #e5484d55; }
 
+  /* ── 证书编排卡片区(P6)── */
+  .certbody { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+  .cert-hd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+  .cert-hd .c-sub { color: var(--sub); }
+  .cert-hd .c-err { color: var(--red); }
+  .cert-hd b.days.err { color: var(--red); }
+  .cert-hint { font-size: 13px; color: var(--yellow); }
+  .certtask pre { margin: 0; padding: 8px 10px; background: var(--panel2); border: 1px solid var(--border);
+                  border-radius: 8px; font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px;
+                  line-height: 1.5; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+  /* 编排设置折叠区(非 modal,自带 input 样式) */
+  .cert-cfg { border-top: 1px dashed var(--border); padding-top: 8px; }
+  .cert-cfg summary { cursor: pointer; color: var(--sub); font-size: 12.5px; user-select: none; }
+  .cert-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-top: 10px; }
+  .cert-grid .field label { display: block; font-size: 11.5px; color: var(--sub); margin-bottom: 4px; }
+  .cert-grid .field input[type=text], .cert-grid .field input[type=number], .cert-grid .field select {
+    width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; padding: 7px 10px; font-size: 13px; }
+  .cert-grid .field input:focus, .cert-grid .field select:focus { border-color: var(--blue-dim); outline: none; }
+  .arline { display: flex; align-items: center; gap: 8px; color: var(--sub); font-size: 13px; flex-wrap: wrap; }
+  .arline input[type=checkbox] { accent-color: var(--blue); width: 15px; height: 15px; }
+  .arline input[type=number] { width: 72px; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; padding: 5px 8px; font-size: 13px; }
+  .c-envstat { font-size: 12.5px; color: var(--sub); }
+  #c_provider_custom, #c_provider2_custom { margin-top: 6px; }
+  .c-envstat.ok { color: var(--green); }
+  .cert-cfg .ok { font-size: 12.5px; color: var(--green); }
+  /* 折叠指示箭头(编排设置 summary + 任务面板) */
+  .cert-cfg > summary::before { content: '▸'; display: inline-block; margin-right: 6px;
+    color: var(--blue); transition: transform .15s ease; }
+  .cert-cfg[open] > summary::before { transform: rotate(90deg); }
+  .certtask .cert-hd button { margin-left: auto; }
+  @media (max-width: 720px) { .cert-grid { grid-template-columns: 1fr; } }
+
   /* ── 响应式(窄屏:侧栏收窄,超窄:上下堆叠) ── */
   @media (max-width: 980px) {
     aside { width: 264px; }
@@ -369,6 +403,48 @@
   </div>
   <div class="pxsummary" id="pxSummary"></div>
   <div class="pxwrap">
+    <div class="pxblock" id="certBlock">
+      <h3>证书编排(warden 编排 lego:一键申请/续期;DNS 凭据存独立 acme.env,本页不回显)</h3>
+      <div class="certbody">
+        <div class="cert-hint" id="certGuide" style="display:none"></div>
+        <div class="pxbar">
+          <span class="info" id="certInfo">加载中…</span>
+          <span class="grow"></span>
+          <button class="btn sm" id="certInstallBtn" onclick="certInstall()">自动安装 lego</button>
+          <button class="btn sm" id="certRenewBtn" onclick="certRenew()" style="display:none">立即续期</button>
+          <button class="btn primary sm" onclick="openCertForm()">一键申请证书</button>
+        </div>
+        <div class="certtask" id="certTask" style="display:none"></div>
+        <details class="cert-cfg" id="certCfg">
+          <summary>编排设置(泛域名根域 / ACME 账号 / DNS 服务商 / 自动续签;写回 services.toml)</summary>
+          <div class="cert-grid">
+            <div class="field"><label>泛域名根域(证书与反代 auto 路由共用)</label>
+              <input id="c_domain" type="text" placeholder="example.com"></div>
+            <div class="field"><label>ACME 邮箱(账号)</label>
+              <input id="c_email2" type="text" placeholder="ops@example.com"></div>
+            <div class="field"><label>DNS provider(lego --dns 名;下拉预置 33 家)</label>
+              <select id="c_provider2" onchange="providerSelChanged('c_provider2','c_provider2_custom')"></select>
+              <input id="c_provider2_custom" type="text" placeholder="手动输入 lego --dns 名" style="display:none"></div>
+            <div class="field"><label>ACME 目录</label>
+              <input id="c_server2" list="acmeServers" type="text" placeholder="letsencrypt"></div>
+            <div class="field"><label>自动续签(剩余 &lt; 阈值时 warden 自动经 lego 续期)</label>
+              <div class="arline">
+                <label><input id="c_ar" type="checkbox"> 启用</label>
+                剩余 <input id="c_ar_days" type="number" min="1" max="90" value="30"> 天时续期
+              </div></div>
+            <div class="field"><label>DNS 凭据(独立 0600 acme.env,本页不回显)</label>
+              <span class="c-envstat" id="certEnvStat">未配置</span>
+              <div class="c-envstat" style="margin-top:4px">凭据随「一键申请证书」表单录入/更新</div></div>
+          </div>
+          <div class="err" id="certCfgErr"></div>
+          <span class="ok" id="certCfgOk"></span>
+          <div class="pxbar" style="margin-top:8px">
+            <span class="grow"></span>
+            <button class="btn primary sm" onclick="certSaveCfg()">保存设置</button>
+          </div>
+        </details>
+      </div>
+    </div>
     <div class="pxblock">
       <h3>显式路由([[proxy.route]],写回 services.toml,即时生效)</h3>
       <table class="pxtable pxroutes"><colgroup><col><col><col><col></colgroup><thead><tr>
@@ -406,6 +482,33 @@
     <div class="actions">
       <button class="btn" onclick="closeRouteForm()">取消</button>
       <button class="btn primary" onclick="submitRouteForm()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 证书一键申请表单(P6;DNS 凭据只进 0600 的 acme.env,不写主配置) -->
+<div class="overlay" id="certOverlay" style="display:none" onkeydown="modalKeys(event, 'submitCertForm')">
+  <div class="modal">
+    <h3>一键申请证书(lego DNS-01,泛域名)</h3>
+    <div class="field"><label>ACME 邮箱 *</label><input id="c_email" type="text" placeholder="ops@example.com"></div>
+    <div class="field"><label>DNS provider *(下拉预置 33 家;其他可手动输入)</label>
+      <select id="c_provider" onchange="providerSelChanged('c_provider','c_provider_custom',certProviderChanged)"></select>
+      <input id="c_provider_custom" type="text" placeholder="lego --dns 名(见 lego 官方文档 dns Providers)" style="display:none" oninput="certProviderChanged()">
+    </div>
+    <div class="field"><label>DNS 凭据(每行 KEY=VALUE;非空覆盖写入独立 acme.env,留空沿用已保存)</label>
+      <textarea id="c_env" rows="4" placeholder="选择 provider 后此处显示变量模板"></textarea>
+      <div class="c-sub" id="certEnvHelp" style="margin-top:4px"></div>
+      <div class="c-sub" id="certEnvSaved" style="margin-top:2px"></div></div>
+    <div class="field"><label>域名(逗号分隔;留空 = 裸域 + 通配)</label><input id="c_domains" type="text" placeholder="example.com, *.example.com"></div>
+    <div class="field"><label>ACME 目录</label><input id="c_server" list="acmeServers" type="text" placeholder="letsencrypt">
+      <datalist id="acmeServers">
+        <option value="letsencrypt">Let's Encrypt(生产)</option>
+        <option value="letsencryptstaging">Let's Encrypt Staging(测试,绕开限速)</option>
+      </datalist></div>
+    <div class="err" id="certErr"></div>
+    <div class="actions">
+      <button class="btn" onclick="closeCertForm()">取消</button>
+      <button class="btn primary" onclick="submitCertForm()">开始签发</button>
     </div>
   </div>
 </div>
@@ -608,8 +711,9 @@ function modalKeys(e, submitFn) {
 }
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  // 关闭顺序:配置编辑器(脏守卫)→ 路由 → 服务 → token
+  // 关闭顺序:配置编辑器(脏守卫)→ 证书 → 路由 → 服务 → token
   if (el('cfgOverlay').style.display !== 'none') { closeConfigEditor(); return; }
+  if (el('certOverlay').style.display !== 'none') { closeCertForm(); return; }
   if (el('routeOverlay').style.display !== 'none') { closeRouteForm(); return; }
   if (el('formOverlay').style.display !== 'none') { closeForm(); return; }
   if (el('tokenOverlay').style.display !== 'none') { closeTokenModal(); return; }
@@ -1350,7 +1454,7 @@ function setView(px) {
   el('pxview').style.display = px ? 'flex' : 'none';
   el('main').style.display = px ? 'none' : '';
   el('pxBtn').classList.toggle('primary', px);
-  if (px) loadProxy();
+  if (px) { loadProxy(); loadCert(); }
 }
 function toggleProxyView() {
   location.hash = pxOpen ? '' : '#/proxy'; // hashchange 统一应用
@@ -1574,6 +1678,364 @@ async function loadProxy() {
   }
 }
 
+// ── 证书编排(P6):状态聚合面板 + 一键申请表单 + 任务进度 ─────────
+let certInfo = null;
+// 任务面板折叠态(新任务自动重置为展开;头部「收起/展开」切换)
+let certTaskFolded = false, certTaskKey = '';
+
+function toggleCertTask() {
+  certTaskFolded = !certTaskFolded;
+  if (certInfo) renderCertPanel(certInfo);
+}
+
+// POST + JSON body(api() 仅支持无 body 请求);错误透传后端 message
+async function apiPost(path, body) {
+  return apiSend('POST', path, body);
+}
+async function apiPut(path, body) {
+  return apiSend('PUT', path, body);
+}
+async function apiSend(method, path, body) {
+  const r = await fetch(path, {
+    method: method,
+    headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+    body: JSON.stringify(body || {}),
+  });
+  if (!r.ok) {
+    if (r.status === 401) { needsAuth(); throw new Error('unauthorized'); }
+    let msg = 'HTTP ' + r.status;
+    try { const j = await r.json(); if (j && j.message) msg += ':' + j.message; } catch (e) { /* 忽略 */ }
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+// 预置 DNS provider 清单(id = lego --dns 名;标签中文化;对照官方文档
+// 核实于 2026-10-07)。select 点开即全量可见——datalist 会被预填值过滤,
+// 用户误以为「只支持腾讯云」(验收反馈),故弃用。
+const DNS_PROVIDERS = [
+  { id: 'tencentcloud', label: '腾讯云 DNSPod' },
+  { id: 'edgeone', label: '腾讯云 EdgeOne' },
+  { id: 'alidns', label: '阿里云 DNS' },
+  { id: 'aliesa', label: '阿里云 ESA' },
+  { id: 'huaweicloud', label: '华为云' },
+  { id: 'volcengine', label: '火山引擎' },
+  { id: 'baiducloud', label: '百度智能云' },
+  { id: 'jdcloud', label: '京东云' },
+  { id: 'ucloud', label: 'UCloud' },
+  { id: 'westcn', label: '西部数码' },
+  { id: 'xinnet', label: '新网' },
+  { id: 'rainyun', label: '雨云' },
+  { id: 'cloudflare', label: 'Cloudflare' },
+  { id: 'route53', label: 'AWS Route 53' },
+  { id: 'azuredns', label: 'Azure DNS' },
+  { id: 'gcloud', label: 'Google Cloud' },
+  { id: 'godaddy', label: 'GoDaddy' },
+  { id: 'namecheap', label: 'Namecheap' },
+  { id: 'namesilo', label: 'NameSilo' },
+  { id: 'namedotcom', label: 'Name.com' },
+  { id: 'gandiv5', label: 'Gandi' },
+  { id: 'ovh', label: 'OVHcloud' },
+  { id: 'digitalocean', label: 'DigitalOcean' },
+  { id: 'linode', label: 'Linode' },
+  { id: 'hetzner', label: 'Hetzner' },
+  { id: 'vultr', label: 'Vultr' },
+  { id: 'ns1', label: 'NS1' },
+  { id: 'porkbun', label: 'Porkbun' },
+  { id: 'vercel', label: 'Vercel' },
+  { id: 'netlify', label: 'Netlify' },
+  { id: 'cloudns', label: 'ClouDNS' },
+  { id: 'dnsimple', label: 'DNSimple' },
+  { id: 'gcore', label: 'G-Core' },
+];
+
+// 常用 provider 的凭据变量模板(纯 KEY=VALUE 骨架,「填入模板」直接注入
+// textarea,用户只补 = 后面的值;变量名逐一对照 lego 官方文档核实)
+const CERT_ENV_HINTS = {
+  tencentcloud: 'TENCENTCLOUD_SECRET_ID=AKID…\nTENCENTCLOUD_SECRET_KEY=…',
+  edgeone: 'EDGEONE_SECRET_ID=…\nEDGEONE_SECRET_KEY=…',
+  alidns: 'ALICLOUD_ACCESS_KEY=LTAI…\nALICLOUD_SECRET_KEY=…',
+  aliesa: 'ALIESA_ACCESS_KEY=…\nALIESA_SECRET_KEY=…',
+  huaweicloud: 'HUAWEICLOUD_ACCESS_KEY_ID=…\nHUAWEICLOUD_SECRET_ACCESS_KEY=…',
+  volcengine: 'VOLC_ACCESSKEY=…\nVOLC_SECRETKEY=…',
+  baiducloud: 'BAIDUCLOUD_ACCESS_KEY_ID=…\nBAIDUCLOUD_SECRET_ACCESS_KEY=…',
+  jdcloud: 'JDCLOUD_ACCESS_KEY_ID=…\nJDCLOUD_ACCESS_KEY_SECRET=…',
+  ucloud: 'UCLOUD_PUBLIC_KEY=…\nUCLOUD_PRIVATE_KEY=…',
+  westcn: 'WESTCN_USERNAME=…\nWESTCN_PASSWORD=…',
+  xinnet: 'XINNET_AGENT_ID=…\nXINNET_SECRET=…',
+  rainyun: 'RAINYUN_API_KEY=…',
+  cloudflare: 'CF_DNS_API_TOKEN=…',
+  route53: 'AWS_ACCESS_KEY_ID=AKIA…\nAWS_SECRET_ACCESS_KEY=…\nAWS_REGION=us-east-1',
+  azuredns: 'AZURE_CLIENT_ID=…\nAZURE_CLIENT_SECRET=…\nAZURE_TENANT_ID=…\nAZURE_SUBSCRIPTION_ID=…\nAZURE_RESOURCE_GROUP=…',
+  gcloud: 'GCE_SERVICE_ACCOUNT_FILE=/path/sa.json\nGCE_PROJECT=my-project',
+  godaddy: 'GODADDY_API_KEY=…\nGODADDY_API_SECRET=…',
+  namecheap: 'NAMECHEAP_API_USER=…\nNAMECHEAP_API_KEY=…',
+  namesilo: 'NAMESILO_API_KEY=…',
+  namedotcom: 'NAMECOM_USERNAME=…\nNAMECOM_API_TOKEN=…',
+  gandiv5: 'GANDIV5_PERSONAL_ACCESS_TOKEN=…',
+  ovh: 'OVH_ENDPOINT=ovh-eu\nOVH_APPLICATION_KEY=…\nOVH_APPLICATION_SECRET=…\nOVH_CONSUMER_KEY=…',
+  digitalocean: 'DO_AUTH_TOKEN=…',
+  linode: 'LINODE_TOKEN=…',
+  hetzner: 'HETZNER_API_TOKEN=…',
+  vultr: 'VULTR_API_KEY=…',
+  ns1: 'NS1_API_KEY=…',
+  porkbun: 'PORKBUN_API_KEY=…\nPORKBUN_SECRET_API_KEY=…',
+  vercel: 'VERCEL_API_TOKEN=…',
+  netlify: 'NETLIFY_TOKEN=…',
+  cloudns: 'CLOUDNS_AUTH_ID=…\nCLOUDNS_AUTH_PASSWORD=…',
+};
+// 少数 provider 的补充说明(展示在帮助行,不进模板避免污染解析)
+const CERT_ENV_NOTES = {
+  cloudflare: '推荐 API Token;旧式凭据可用 CF_API_EMAIL + CF_API_KEY',
+  gandiv5: '或用旧式 GANDIV5_API_KEY=…',
+  vercel: '团队域名需再加一行 VERCEL_TEAM_ID=…',
+};
+
+// ── provider select 构建与取值(申请表单 c_provider / 设置卡 c_provider2 共用)──
+function buildProviderSelect(sel) {
+  sel.innerHTML = '<option value="">(选择 DNS provider)</option>'
+    + DNS_PROVIDERS.map(p => '<option value="' + p.id + '">' + esc(p.label) + ' · ' + p.id + '</option>').join('')
+    + '<option value="__custom">其他 / 手动输入…</option>';
+}
+// select 切换(切到「其他」时显示手动输入框)
+function providerSelChanged(selId, customId, after) {
+  el(customId).style.display = el(selId).value === '__custom' ? '' : 'none';
+  if (after) after();
+}
+// 回填:清单内 → 直接选中;清单外非空 → 「其他」+ 填入输入框
+function setProviderField(selId, customId, val) {
+  const inList = DNS_PROVIDERS.some(p => p.id === val);
+  el(selId).value = inList ? val : (val ? '__custom' : '');
+  el(customId).style.display = el(selId).value === '__custom' ? '' : 'none';
+  el(customId).value = inList ? '' : (val || '');
+}
+// 取值:普通选中 → option 值;「其他」→ 输入框值(小写化);未选 → ''
+function providerFieldValue(selId, customId) {
+  if (el(selId).value !== '__custom') return el(selId).value;
+  return el(customId).value.trim().toLowerCase();
+}
+// 「填入模板」:把当前 provider 的凭据变量骨架注入 textarea
+function fillCertEnvTemplate() {
+  const tpl = CERT_ENV_HINTS[providerFieldValue('c_provider', 'c_provider_custom')];
+  if (tpl) { el('c_env').value = tpl; el('c_env').focus(); }
+}
+
+// provider 变化 → 更新凭据帮助行(变量名 + 模板按钮)与 placeholder
+function certProviderChanged() {
+  const id = providerFieldValue('c_provider', 'c_provider_custom');
+  const hint = CERT_ENV_HINTS[id];
+  const note = CERT_ENV_NOTES[id];
+  const help = el('certEnvHelp');
+  if (hint) {
+    const names = hint.split('\n').map(l => l.split('=')[0]).join(' / ');
+    help.innerHTML = '需要 ' + hint.split('\n').length + ' 个变量:<b>' + esc(names) + '</b>'
+      + (note ? '<br>' + esc(note) : '')
+      + ' <button class="btn sm" type="button" onclick="fillCertEnvTemplate()">填入模板</button>';
+    if (!el('c_env').value.trim()) el('c_env').placeholder = hint;
+  } else if (id) {
+    help.textContent = '未预置模板:变量名见 lego 官方文档(go-acme.github.io/lego/dns,每行 KEY=VALUE)';
+  } else {
+    help.textContent = '';
+  }
+}
+buildProviderSelect(el('c_provider'));
+buildProviderSelect(el('c_provider2'));
+
+async function loadCert() {
+  if (!pxOpen) return;
+  let c;
+  try { c = await api('/api/v1/proxy/cert'); }
+  catch (e) {
+    // 404 = daemon 无此端点(旧版本/OFF 形态)→ 隐藏整卡;
+    // 瞬时网络错误保留面板,下轮轮询(2s)自然重试
+    if (String(e.message || '').includes('404')) el('certBlock').style.display = 'none';
+    return;
+  }
+  certInfo = c;
+  renderCertPanel(c);
+}
+
+function renderCertPanel(c) {
+  // 形状守卫:demo 预览/异常响应缺字段时收起整卡,不抛 TypeError
+  if (!c || !c.cert || !c.acme || !c.lego) { el('certBlock').style.display = 'none'; return; }
+  const bits = [];
+  if (c.cert.exists) {
+    const san = (c.cert.san && c.cert.san.length) ? c.cert.san.join(', ') : '(无 SAN)';
+    bits.push('<b>' + esc(san) + '</b>');
+    const near = c.cert.days_left < c.acme.expire_warn_days;
+    bits.push('剩余 <b class="days' + (near ? ' err' : '') + '">' + c.cert.days_left + ' 天</b>');
+    if (c.cert.not_after) bits.push('到期 ' + esc(new Date(c.cert.not_after).toLocaleString()));
+  } else {
+    bits.push('<span class="tag err">证书未签发</span>');
+  }
+  if (c.lego.installed) {
+    bits.push('lego <b>' + esc(c.lego.version || '') + '</b>(' + esc(c.lego.source || '') + ')');
+  } else {
+    bits.push('<span class="tag err">lego 未安装</span>');
+  }
+  if (c.acme.configured) {
+    bits.push(c.acme.renew_days > 0
+      ? '自动续期阈值 <b>' + c.acme.renew_days + ' 天</b>'
+      : '<span class="tag err">自动续期已关闭</span>');
+  }
+  el('certInfo').innerHTML = bits.join(' · ');
+  // 软绑定引导:反代未配 domain/https_bind 时提示先补反代配置(功能仍可独立用)
+  const guide = el('certGuide');
+  const miss = [];
+  if (!c.domain) miss.push('domain(泛域名根域)');
+  if (!c.https_bind) miss.push('https_bind(TLS 监听地址)');
+  if (miss.length) {
+    guide.innerHTML = '证书服务于反向代理的 https 入口:当前 [proxy] 未配置 ' + esc(miss.join('、'))
+      + '。根域可在下方「编排设置」填写;https_bind 请用配置文件编辑器设置(改监听需重启 warden)。';
+    guide.style.display = '';
+  } else {
+    guide.style.display = 'none';
+  }
+  // 设置面回填(仅折叠时刷新——展开编辑中不被轮询覆写)
+  if (!el('certCfg').open) fillCertCfg(c);
+  el('certInstallBtn').style.display = c.lego.installed ? 'none' : '';
+  el('certRenewBtn').style.display = c.cert.exists ? '' : 'none';
+  // 任务进行中禁用触发按钮(点击后的即时禁用由各 handler 自己做,这里随轮询统一)
+  const busy = !!(c.task && c.task.status === 'running');
+  el('certInstallBtn').disabled = busy;
+  el('certRenewBtn').disabled = busy;
+
+  // 任务进度区(状态 + 摘要 + 可折叠输出尾部;新任务自动展开)
+  const box = el('certTask');
+  const t = c.task;
+  if (!t) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = '';
+  const key = t.kind + '@' + t.started_at;
+  if (key !== certTaskKey) { certTaskKey = key; certTaskFolded = false; }
+  const KIND_L10N = { install: '安装 lego', issue: '签发', renew: '续期' };
+  const ST_L10N = { running: '进行中', success: '成功', failed: '失败' };
+  let html = '<div class="cert-hd"><span class="tag' + (t.status === 'failed' ? ' err' : '') + '">'
+    + esc(KIND_L10N[t.kind] || t.kind) + ' · ' + esc(ST_L10N[t.status] || t.status) + '</span>';
+  if (t.message) html += ' <span class="' + (t.status === 'failed' ? 'c-err' : 'c-sub') + '">' + esc(t.message) + '</span>';
+  html += ' <button class="btn sm" onclick="toggleCertTask()">' + (certTaskFolded ? '展开输出' : '收起输出') + '</button></div>';
+  // 冷启动边界(方案 a):签发/续期成功但 https 入口未跑 → 重启提示
+  if (t.status === 'success' && (t.kind === 'issue' || t.kind === 'renew') && !c.https_running) {
+    html += '<div class="cert-hint">证书已就绪:<b>重启 warden 后 https 生效</b>(签发前 https 入口未启动)</div>';
+  }
+  if (!certTaskFolded && t.output_tail && t.output_tail.length) {
+    html += '<pre>' + esc(t.output_tail.join('\n')) + '</pre>';
+  }
+  box.innerHTML = html;
+}
+
+async function certInstall() {
+  const b = el('certInstallBtn');
+  b.disabled = true;
+  try { await apiPost('/api/v1/proxy/cert/lego/install'); loadCert(); }
+  catch (e) { b.disabled = false; alert('lego 安装任务启动失败:' + e.message); }
+}
+
+// 强制重签消耗 CA 配额(LE 同域名 5 张/周),须显式确认
+async function certRenew() {
+  if (!confirm('立即续期将经 lego 强制重新签发证书(消耗 CA 同域名配额,Let\'s Encrypt 为 5 张/周),确认继续?')) return;
+  const b = el('certRenewBtn');
+  b.disabled = true;
+  try { await apiPost('/api/v1/proxy/cert/renew'); loadCert(); }
+  catch (e) { b.disabled = false; alert('续期任务启动失败:' + e.message); }
+}
+
+// 编排设置回填(空字符串 = 清空对应配置;凭据不在此面,见 acme.env 状态行)
+function fillCertCfg(c) {
+  el('c_domain').value = c.domain || '';
+  el('c_email2').value = c.acme.email || '';
+  setProviderField('c_provider2', 'c_provider2_custom', c.acme.dns_provider || '');
+  el('c_server2').value = c.acme.server || 'letsencrypt';
+  el('c_ar').checked = c.acme.renew_days > 0;
+  el('c_ar_days').value = c.acme.renew_days > 0 ? c.acme.renew_days : 30;
+  const s = el('certEnvStat');
+  if (c.env && c.env.exists) {
+    s.textContent = '已配置(' + c.env.count + ' 项 → ' + c.env.file + ')';
+    s.classList.add('ok');
+  } else {
+    s.textContent = '未配置(签发时随表单录入)';
+    s.classList.remove('ok');
+  }
+}
+
+async function certSaveCfg() {
+  el('certCfgErr').textContent = '';
+  el('certCfgOk').textContent = '';
+  const days = el('c_ar').checked
+    ? Math.max(1, Math.min(90, parseInt(el('c_ar_days').value, 10) || 30)) : 0;
+  try {
+    await apiPut('/api/v1/proxy/cert/acme', {
+      email: el('c_email2').value.trim(),
+      dns_provider: providerFieldValue('c_provider2', 'c_provider2_custom'),
+      server: el('c_server2').value.trim(),
+      renew_days: days,
+      domain: el('c_domain').value.trim(),
+    });
+    el('certCfgOk').textContent = '已保存(写回配置文件' + (certInfo && !certInfo.https_bind ? ';https_bind 未配置,见上方引导' : '') + ')';
+    loadCert();
+  } catch (e) { el('certCfgErr').textContent = e.message; }
+}
+
+function openCertForm() {
+  el('certErr').textContent = '';
+  const a = certInfo ? certInfo.acme : {};
+  el('c_email').value = a.email || '';
+  setProviderField('c_provider', 'c_provider_custom', a.dns_provider || '');
+  el('c_server').value = a.server || 'letsencrypt';
+  el('c_env').value = '';
+  // 已存凭据状态行:留空 = 沿用(防误以为必填而旧值被覆盖),填写 = 覆盖
+  el('certEnvSaved').textContent = certInfo && certInfo.env && certInfo.env.exists
+    ? '已保存 ' + certInfo.env.count + ' 项凭据:此处留空 = 沿用,填写 = 覆盖'
+    : '尚未保存凭据(将写入独立 acme.env,不进配置文件)';
+  certProviderChanged();
+  // 域名预填:裸域 + 通配(可改)
+  el('c_domains').value = certInfo && certInfo.domain
+    ? certInfo.domain + ', *.' + certInfo.domain : '';
+  el('certOverlay').style.display = 'flex';
+  el('c_email').focus();
+}
+function closeCertForm() { el('certOverlay').style.display = 'none'; }
+
+// 解析凭据 textarea(每行 KEY=VALUE;# 注释与空行跳过)
+function parseCertEnv(text) {
+  const env = {};
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) throw new Error('凭据行须为 KEY=VALUE:' + line);
+    env[line.slice(0, eq).trim()] = line.slice(eq + 1);
+  }
+  return env;
+}
+
+async function submitCertForm() {
+  el('certErr').textContent = '';
+  const email = el('c_email').value.trim();
+  const provider = providerFieldValue('c_provider', 'c_provider_custom');
+  if (!email.includes('@')) { el('certErr').textContent = '请填写 ACME 邮箱'; return; }
+  if (!provider) { el('certErr').textContent = '请选择/填写 DNS provider'; return; }
+  let env, domains;
+  try { env = parseCertEnv(el('c_env').value); }
+  catch (e) { el('certErr').textContent = e.message; return; }
+  const domText = el('c_domains').value.trim();
+  if (domText) {
+    domains = domText.split(/[,，\s]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+  }
+  const body = {
+    email, dns_provider: provider, env,
+    server: el('c_server').value.trim() || 'letsencrypt',
+    domains: domains || null,
+  };
+  try {
+    await apiPost('/api/v1/proxy/cert/issue', body);
+    el('c_env').value = '';   // 凭据即用即弃,不留隐藏 DOM
+    closeCertForm();
+    loadCert(); // 任务面板随即展示进度
+  } catch (e) {
+    el('certErr').textContent = '签发任务启动失败:' + e.message;
+  }
+}
+
 // 路由表单(null=新增;否则编辑既有)
 let editingRoute = null;
 function routeMode() {
@@ -1695,7 +2157,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setView(location.hash === '#/proxy');
   loadPxInfo();
   loadHealth(); loadServices();
-  svcTimer = setInterval(() => { loadHealth(); loadServices(); loadPxInfo(); if (pxOpen) loadProxy(); }, 2000);
+  svcTimer = setInterval(() => { loadHealth(); loadServices(); loadPxInfo(); if (pxOpen) { loadProxy(); loadCert(); } }, 2000);
 });
 window.addEventListener('beforeunload', closeStream);
 </script>
