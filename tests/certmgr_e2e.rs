@@ -505,16 +505,18 @@ async fn renew_reports_path_drift_after_cert_file_change() {
     )
     .await;
 
-    // 运行期改 cert_file/key_file → ssl2(引擎/shared 不感知,reloader 仍盯 ssl)
+    // 运行期改 cert_file/key_file → ssl2(引擎/shared 不感知,reloader 仍盯 ssl)。
+    // start_daemon 以 {:?} 写路径(Windows 反斜杠转义成 \\),替换须用同形态匹配
+    let cfg_debug = |p: std::path::PathBuf| format!("{:?}", p.display().to_string());
     let text = std::fs::read_to_string(dir.join("services.toml")).unwrap();
     let text = text
         .replace(
-            &dir.join("ssl/fullchain.pem").display().to_string(),
-            &dir.join("ssl2/fullchain.pem").display().to_string(),
+            &cfg_debug(dir.join("ssl/fullchain.pem")),
+            &cfg_debug(dir.join("ssl2/fullchain.pem")),
         )
         .replace(
-            &dir.join("ssl/privkey.pem").display().to_string(),
-            &dir.join("ssl2/privkey.pem").display().to_string(),
+            &cfg_debug(dir.join("ssl/privkey.pem")),
+            &cfg_debug(dir.join("ssl2/privkey.pem")),
         );
     std::fs::write(dir.join("services.toml"), text).unwrap();
 

@@ -15,6 +15,9 @@
 //! 上限 = 核数 × 100(`compute_cpu_pct`);首轮无基线时 CPU 为 0、内存照常。
 
 use std::collections::HashMap;
+// Linux 差分基线时间戳专用;非 Linux 走 sysinfo(无消费者,Windows 下
+// unused import 会被 -D warnings 拦,见 2026-10-07 CI 修复)
+#[cfg(target_os = "linux")]
 use std::time::Instant;
 
 use chrono::Utc;
@@ -27,6 +30,9 @@ use crate::model::ProcMetrics;
 /// CPU% 计算(纯函数,便于单测):`delta_ticks / (CLK_TCK × elapsed_secs) × 100`,
 /// 与 sysinfo 的 `Δ(utime+stime) / (全局tickΔ/核数) × 100` 数学等价
 /// (全局 tick 每秒恰前进 `核数 × CLK_TCK`)。
+/// 仅 Linux 直读采样路径消费(非 Linux 走 sysinfo);保留 `test` 使纯函数
+/// 单测全平台执行(Windows CI 2026-10-07 曾因缺此门控 dead_code 失败)。
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn compute_cpu_pct(
     delta_ticks: u64,
     elapsed_secs: f32,
