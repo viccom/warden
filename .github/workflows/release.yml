@@ -1,6 +1,7 @@
 name: Release
 
-# 推送 v* 或纯数字版本标签(如 0.2.0)触发:双平台构建 → 自动创建 GitHub Release 并附带产物。
+# 推送 v* 或纯数字版本标签(如 0.2.0)触发:CI 门禁 → 双平台构建 → 自动创建
+# GitHub Release 并附带产物。
 # 产物:裸二进制(warden[-desktop]-<tag>-<platform>)
 #     + CLI 开箱发行包 warden-<ver>-cli-<platform>.tar.gz / .zip(含配置示例与 AGENT-GUIDE.md)
 #     + 各自 .sha256
@@ -12,10 +13,47 @@ permissions:
   contents: write
 
 jobs:
+  # CI 门禁:tag 指向 commit 的 CI check 必须全部通过才继续构建发布(fail-closed)。
+  # 背景:Release 与 CI 工作流互相独立,2026-10 v0.3.3/v0.4.0 曾因 Windows clippy
+  # 平台差异 CI 红灯而 Release 照常发布——绿灯掩盖失败,积累一天才被发现。
+  # tag 指向的 commit 若从未触发 CI(如只推了 tag),25 分钟超时失败:
+  # 先推 main 等 CI 绿,再打 tag。
+  ci-gate:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: 等待并校验 tag commit 的 CI 结论
+        run: |
+          SHA="${{ github.sha }}"
+          echo "tag ${{ github.ref_name }} → commit $SHA,轮询 CI check 结论…"
+          for i in $(seq 1 50); do
+            RUNS=$(gh api "repos/${{ github.repository }}/commits/$SHA/check-runs" \
+              --jq '[.check_runs[] | select(.name | startswith("check ("))]')
+            TOTAL=$(echo "$RUNS" | jq 'length')
+            PENDING=$(echo "$RUNS" | jq '[.[] | select(.status != "completed")] | length')
+            if [ "$TOTAL" -ge 1 ] && [ "$PENDING" -eq 0 ]; then
+              echo "$RUNS" | jq -r '.[] | "  \(.name): \(.conclusion)"'
+              if echo "$RUNS" | jq -e 'all(.conclusion == "success")' > /dev/null; then
+                echo "CI 全部通过,放行构建"
+                exit 0
+              fi
+              echo "::error::CI 存在未通过的 check,拒绝发布——修复后删 tag 重打"
+              exit 1
+            fi
+            echo "  …CI 尚未全部完成($TOTAL 个 check,$PENDING 在途),30s 后重试($i/50)"
+            sleep 30
+          done
+          echo "::error::等待 CI 完成 25 分钟超时——tag 指向的 commit 似乎未触发 CI(先推 main 等 CI 绿再打 tag)"
+          exit 1
+
   build-windows:
+    needs: ci-gate
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build CLI
@@ -44,9 +82,10 @@ jobs:
   build-linux:
     # 固定 22.04 而非 ubuntu-latest:glibc 向下兼容,构建基线越老产出的二进制可跑的系统越多
     # (24.04 构建的二进制要求 glibc ≥ 2.39,22.04 仅要求 ≥ 2.35 → 覆盖 Debian 12 / RHEL 9 / Ubuntu 22.04)
+    needs: ci-gate
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build CLI
@@ -64,9 +103,9 @@ jobs:
 
   release:
     needs: [build-windows, build-linux]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           path: dist

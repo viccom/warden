@@ -10,10 +10,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        # ubuntu 钉 24.04 而非 latest:runner 2026-10-19 起 ubuntu-latest 自动迁移
+        # Ubuntu 26,钉版避免工具链/系统库随镜像漂移引入不可预期红灯
+        os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Tauri v2 Linux 前置(warden-desktop 参与 --workspace 编译/测试)
       - name: Install Tauri Linux deps
         if: runner.os == 'Linux'

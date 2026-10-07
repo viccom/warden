@@ -92,6 +92,7 @@ curl -X DELETE http://127.0.0.1:8789/api/v1/proxy/routes/<host>
 - 改配置语义(`config.rs`):跑 `config::tests`(解析/Default/坏项跳过/覆盖)。
 - 改 Web UI(`web/index.html`):`include_str!` 编译期嵌入,**改后必须重新 `cargo build` 才生效**(运行中的 daemon 不热加载);JS 预检可提取 `<script>` 段过 `node --check`。
 - 改发行包组成(`scripts/package-cli-dist.sh` / `packaging/cli/README.md` / `config/services.demo.*.toml` / `docs/AGENT-GUIDE.md`):跑 `./scripts/package-cli-dist.sh --bin-dir target/release --out /tmp/pkg` 验证产物结构与 `--version` 冒烟(需先 `cargo build --release --jobs 6`);`.github/workflows/release.yml` 的发包步骤只在打 tag 时执行,平时改动无法本地验证,汇报时须显式声明。
+- **CI/发布门禁(2026-10-07 教训,v0.3.3 起 Windows clippy 红灯被 Release 绿灯掩盖积累一天)**:① 本地只能验 Linux 编译目标,平台差异类问题(cfg 门控遗漏的死代码、Windows 路径/转义)只有 CI 能暴露——**push 到 main 后必须跟踪 CI(windows+ubuntu 双平台)到终态才算交付**,红了当天修;② **打 tag 前 tag 指向 commit 的 CI 必须已绿**(release.yml 有 ci-gate 自动门禁,fail-closed:CI 未通过/超时未跑则拒绝发布,修复后删 tag 重打);③ 跨平台代码里 cfg-gated 消费者用到的辅助函数/import 须同步加同款 cfg 门控(Windows `-D warnings` 必炸,本地 Linux 看不见)。
 - 新增逻辑补 `#[cfg(test)]` 内联单测或 `tests/` 集成测试。集成测试用 `tests/common`(`long_runner`/`quick_fail` 跨平台无害命令),**勿固定端口、勿写仓库 `./data/`/`./logs/`**。
 - **进程树语义(必读)**:每个子进程一个 Job Object(Windows,`KILL_ON_JOB_CLOSE`)。`stop` = 优雅信号(CTRL_BREAK/SIGTERM)→ `graceful_timeout_secs` 超时 → `TerminateJobObject` 强杀**整棵进程树**(含孙进程);warden 自身崩溃/退出时子进程树全死,无孤儿。测试可放心覆盖孙进程场景(`port_listener_target --grandchild`)。
 
